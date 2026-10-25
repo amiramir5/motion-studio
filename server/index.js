@@ -18,10 +18,12 @@ import {
   aiConfigured,
   directionsForClient,
   getHealth,
+  invalidateModelCache,
   listModels,
   resolveModel,
   streamGeneration,
-  testConnection
+  testConnection,
+  testConnectionWithKey
 } from './ai.js';
 
 const app = express();
@@ -97,6 +99,65 @@ app.get('/api/ai/models', async (req, res) => {
 
 app.get('/api/ai/directions', (req, res) => {
   res.json({ directions: directionsForClient() });
+});
+
+const ENV_PATH = path.join(ROOT, '.env');
+
+function isLoopbackRequest(req) {
+  const address = String(req.socket?.remoteAddress || '');
+  return address === '::1' || address === '127.0.0.1' || address === '::ffff:127.0.0.1';
+}
+
+function writeEnvKey(key) {
+  let lines = [];
+  try {
+    lines = fs.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/);
+  } catch (e) {
+    lines = [];
+  }
+  lines = lines.filter((line) => !/^\s*(?:export\s+)?(?:GEMINI_API_KEY|GOOGLE_API_KEY)\s*=/.test(line));
+  lines.push(`GEMINI_API_KEY=${key}`);
+  const body = `${lines
+    .map((line) => line.replace(/\s+$/, ''))
+    .filter((line, index, arr) => line !== '' || arr[index - 1] !== '')
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()}\n`;
+  const tempPath = `${ENV_PATH}.${process.pid}.tmp`;
+  fs.writeFileSync(tempPath, body, { mode: 0o600 });
+  fs.renameSync(tempPath, ENV_PATH);
+}
+
+app.post('/api/settings/key', async (req, res) => {
+  if (!isLoopbackRequest(req)) {
+    return res.status(403).json({
+      ok: false,
+      code: 'LOOPBACK_ONLY',
+      error: 'The key can only be saved from this computer, not from another device.'
+    });
+  }
+  const key = String(req.body?.key || '').trim();
+  if (!/^AIza[0-9A-Za-z_-]{20,}$/.test(key)) {
+    return res.status(400).json({
+      ok: false,
+      code: 'INVALID_KEY_FORMAT',
+      error: 'That does not look like a Gemini API key.'
+    });
+  }
+  try {
+    const tested = await testConnectionWithKey(key, req.body?.model);
+    writeEnvKey(key);
+    process.env.GEMINI_API_KEY = key;
+    invalidateModelCache();
+    res.json({ ok: true, model: tested.model, latencyMs: tested.latencyMs, configured: true });
+  } catch (error) {
+    res.status(200).json({
+      ok: false,
+      configured: aiConfigured(),
+      code: error.code || 'AI_ERROR',
+      error: String(error.message || 'Could not verify that key.').replaceAll(key, '***')
+    });
+  }
 });
 
 app.post('/api/ai/test', async (req, res) => {
@@ -253,6 +314,9 @@ app.post('/api/render', async (req, res) => {
       height: meta.height,
       fps: meta.fps,
       duration: meta.duration,
+      requestedDuration: meta.requestedDuration,
+      durationChanged: Boolean(meta.durationChanged),
+      durationSource: meta.durationSource || 'requested',
       bytes: meta.bytes,
       quality: meta.quality,
       aspect,

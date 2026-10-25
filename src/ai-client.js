@@ -64,6 +64,18 @@ export async function aiTest(model) {
   return data;
 }
 
+export async function setGeminiKey(key) {
+  try {
+    return await json('api/settings/key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key })
+    });
+  } catch (error) {
+    return { ok: false, code: 'NETWORK', error: error.message };
+  }
+}
+
 async function preflight(model, handlers, signal) {
   let last = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {

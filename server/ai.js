@@ -1,4 +1,9 @@
 import crypto from 'node:crypto';
+import { getBrowser } from './renderer.js';
+import { readRuntime } from './config.js';
+import { composeDocument } from '../shared/compose.js';
+import { measurePageDuration, parseDeclaredDuration, resolveFilmDuration } from './duration.js';
+import { stripFilmUi, summarizeCleanup } from './film-cleanup.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const REQUEST_TIMEOUT = 20000;
@@ -93,8 +98,8 @@ export function aiConfigured() {
   return Boolean(apiKey());
 }
 
-function authHeaders(extra) {
-  return { 'x-goog-api-key': apiKey(), ...extra };
+function authHeaders(extra, keyOverride) {
+  return { 'x-goog-api-key': keyOverride || apiKey(), ...extra };
 }
 
 function sleep(ms) {
@@ -143,6 +148,10 @@ async function readJson(response) {
 }
 
 let modelCache = { at: 0, models: [] };
+
+export function invalidateModelCache() {
+  modelCache = { at: 0, models: [] };
+}
 
 export async function listModels(force = false) {
   if (!aiConfigured()) {
@@ -274,12 +283,15 @@ function buildSystem({ width, height, aspect, duration, fps, direction }) {
 
 OUTPUT CONTRACT
 Return ONLY one complete HTML file, starting with <!DOCTYPE html>. No markdown fences, no explanations, no comments about yourself. The file must contain all CSS and JS inline. No build tools, no frameworks, no bundler.
-The viewport is exactly ${width}x${height} CSS pixels (${aspect}). Render edge to edge at that size. The video is exactly ${duration} seconds at ${fps} fps and is exported frame by frame, deterministically. It is a film frame, not an interactive page.
-Do not include navigation bars, buttons, forms, close icons, footers, "click" instructions, browser chrome, or UI that belongs to an app. Do not rely on hover, click, focus, audio, video files, cameras, or network APIs. No external JavaScript. External Google Fonts are allowed and should be loaded with a <link>; always provide a strong fallback stack.
+The viewport is exactly ${width}x${height} CSS pixels (${aspect}). Render edge to edge at that size. The piece is exported frame by frame, deterministically. It is a film frame, not an interactive page.
+This is a video, not a web page: no navigation bars, buttons, links, forms, close icons, footers, "click" instructions, start/replay controls, cursor UI, browser chrome, or anything that belongs to an app. The viewer cannot click, type or hover. Do not rely on hover, click, focus, audio, video files, cameras, or network APIs. No external JavaScript. External Google Fonts are allowed and should be loaded with a <link>; always provide a strong fallback stack.
 Never use placeholders such as "Lorem ipsum". Write short, specific, well-set copy. Every text block must be grammatical and intentional.
 
 TIME
-Design the full timeline from 0.000s to ${duration}.000s. Give the piece a strong first frame, an intentional build with staggered entrances, a turn or climax, and a composed final frame that holds. Do not loop infinitely in a way that makes the last frame random. Animation must be continuous and visible at a glance, not elements popping in one after another. Use custom cubic-bezier easing, masks, clip-path, transforms, opacity, staggered delays and precise holds.
+Choose the film's natural length: between 3 and 20 seconds, long enough for the idea to land and short enough to stay dense. Declare it exactly once in the document head as <meta name="ms-duration" content="7.5"> (seconds, one decimal is fine).
+Design the full timeline from 0.000s to that declared length. Give the piece a strong first frame, an intentional build with staggered entrances, a turn or climax, and a composed final frame that holds. Do not loop infinitely in a way that makes the last frame random. Animation must be continuous and visible at a glance, not elements popping in one after another. Use custom cubic-bezier easing, masks, clip-path, transforms, opacity, staggered delays and precise holds.
+The engine measures the real animation end and extends the export if any motion would run past your declared length, so keep the declared value honest. A suggested length of ${duration}s is a starting point, not a limit.
+
 Animate with CSS keyframes, the Web Animations API, or requestAnimationFrame. For 60 fps, animate transform and opacity; avoid layout thrash, giant blurs, filters on large areas, and hundreds of animated nodes. Keep the DOM under ~150 nodes.
 
 ART DIRECTION
@@ -298,16 +310,17 @@ Return only the HTML document.`;
 
 function buildUserPrompt({ mode, prompt, code, width, height, aspect, duration, fps, direction }) {
   const base =
-    `Make a ${duration}-second ${aspect} motion-graphics film (${width}x${height}, ${fps} fps).\n` +
+    `Make a ${aspect} motion-graphics film (${width}x${height}, ${fps} fps).\n` +
+    `Choose its natural length between 3 and 20 seconds and declare it with <meta name="ms-duration" content="…"> in the head. Around ${duration}s is a good starting point, but follow the idea.\n` +
     `Brief: ${prompt || 'Surprise me with a strong, original motion-design idea.'}\n` +
     `Art direction: ${direction.name}. ${direction.blurb}\n` +
     `Return the complete HTML document only.`;
 
   if (mode === 'edit') {
-    return `Revise the existing motion piece below.\n\nRequested change: ${prompt}\n\nRules: keep the stage ${width}x${height}, the ${duration}s duration, the ${fps} fps stage and everything the request does not ask to change. Preserve the art direction. Return the complete revised HTML document only, no commentary.\n\nCURRENT DOCUMENT:\n${code}`;
+    return `Revise the existing motion piece below.\n\nRequested change: ${prompt}\n\nRules: keep the stage ${width}x${height}, the ${fps} fps stage and everything the request does not ask to change. Preserve the art direction and the declared <meta name="ms-duration"> unless the request asks to change the length; if you change it, update the meta to match. Remove any button, link, form or app chrome. Return the complete revised HTML document only, no commentary.\n\nCURRENT DOCUMENT:\n${code}`;
   }
   if (mode === 'extract') {
-    return `This document may have been written as a web page and can contain navigation, panels, social buttons, footers or other chrome that does not belong in a film.\n\nRefactor it into a pure full-bleed ${aspect} motion piece at ${width}x${height}:\n- identify the primary animated scene and keep it,\n- remove all page chrome, unrelated UI, buttons and borders,\n- recompose the scene to fill the frame without distortion or stretching,\n- preserve the character and timing of the original animation,\n- remove any gradients, glows, glass or neon styling.\nReturn the complete revised HTML document only.\n\nSOURCE DOCUMENT:\n${code}`;
+    return `This document may have been written as a web page and can contain navigation, panels, social buttons, footers or other chrome that does not belong in a film.\n\nRefactor it into a pure full-bleed ${aspect} motion piece at ${width}x${height}:\n- identify the primary animated scene and keep it,\n- remove all page chrome, unrelated UI, buttons, links and borders,\n- recompose the scene to fill the frame without distortion or stretching,\n- preserve the character and timing of the original animation,\n- declare the natural length with <meta name="ms-duration" content="…">,\n- remove any gradients, glows, glass or neon styling.\nReturn the complete revised HTML document only.\n\nSOURCE DOCUMENT:\n${code}`;
   }
   return base;
 }
@@ -580,6 +593,70 @@ function isCompleteDocument(code) {
   return /<\/html>$/i.test(String(code || '').trim());
 }
 
+function repairUiPrompt(dangling, code) {
+  return `The film below no longer contains its buttons, links, forms or app chrome, but its CSS or JavaScript still references removed controls (${dangling.join(', ')}).
+
+Return the complete corrected film:
+- delete every rule, selector, variable or listener that targets those removed controls,
+- leave the scene, composition, palette, typography and timing untouched,
+- keep the existing <meta name="ms-duration"> value unless the timeline must change,
+- add no buttons, links, forms, nav, footers, replay controls or other chrome,
+- no gradients, glow, glass or neon.
+
+DOCUMENT:
+${code}`;
+}
+
+async function detectFilmDuration(code, { width, height, requested, signal } = {}) {
+  const declared = parseDeclaredDuration(code);
+  let measured = 0;
+  let indefinite = false;
+  let page = null;
+  try {
+    const browser = await getBrowser();
+    page = await browser.newPage();
+    await page.setViewport({ width: width || 1080, height: height || 1920, deviceScaleFactor: 1 });
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      try {
+        const url = request.url();
+        if (/^(data:|blob:|about:)/i.test(url)) request.continue();
+        else request.abort();
+      } catch (e) {}
+    });
+    page.on('dialog', (dialog) => {
+      dialog.dismiss().catch(() => {});
+    });
+    await page
+      .setContent(composeDocument(code, readRuntime(), { csp: true }), {
+        waitUntil: 'load',
+        timeout: 15000
+      })
+      .catch(() => {});
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new AiError('Cancelled', 'CANCELLED', false);
+      const ready = await page
+        .evaluate(() => !!(window.__MS_CLOCK__ && window.__MS_CLOCK__.ready === true))
+        .catch(() => false);
+      if (ready) break;
+      await sleep(60);
+    }
+    const probe = await measurePageDuration(page);
+    measured = probe.measured;
+    indefinite = probe.indefinite;
+  } catch (error) {
+    if (error instanceof AiError) throw error;
+  } finally {
+    if (page) {
+      try {
+        await page.close();
+      } catch (e) {}
+    }
+  }
+  return resolveFilmDuration({ requested, declared, measured, indefinite });
+}
+
 export async function streamGeneration(params, handlers) {
   const {
     mode = 'generate',
@@ -629,6 +706,7 @@ export async function streamGeneration(params, handlers) {
 
   const cacheKey = hash(
     JSON.stringify({
+      v: 3,
       model,
       mode,
       idea,
@@ -643,9 +721,25 @@ export async function streamGeneration(params, handlers) {
   );
   const cached = cacheGet(cacheKey);
   if (cached) {
-    handlers.onMeta?.({ model, cached: true, direction: directionId });
-    handlers.onDelta(cached);
-    handlers.onDone?.({ code: cached, model, cached: true, violations: [], usage: null });
+    const value =
+      typeof cached === 'string'
+        ? { code: cached, duration: parseDeclaredDuration(cached) || duration, durationSource: 'declared' }
+        : cached;
+    handlers.onMeta?.({ model, cached: true, direction: directionId, duration: value.duration });
+    handlers.onDelta(value.code);
+    handlers.onDone?.({
+      code: value.code,
+      model,
+      cached: true,
+      violations: lintDesign(value.code),
+      direction: directionId,
+      usage: null,
+      duration: value.duration,
+      requestedDuration: duration,
+      durationSource: value.durationSource || 'declared',
+      durationAdjusted: false,
+      cleanup: value.cleanup || null
+    });
     return;
   }
 
@@ -653,6 +747,7 @@ export async function streamGeneration(params, handlers) {
 
   const modelCandidates = await generationCandidates(model);
   let final = '';
+  let finalDuration = Math.min(30, Math.max(2, Number(duration) || 10));
   let usage = null;
   let usedModel = model;
   try {
@@ -725,15 +820,82 @@ export async function streamGeneration(params, handlers) {
       }
     }
 
+    let cleanup = null;
+    const stripped = stripFilmUi(final);
+    if (stripped.removed) {
+      handlers.onPhase?.({ phase: 'cleaning', removed: stripped.removed });
+      final = stripped.code;
+      cleanup = {
+        removed: stripped.removed,
+        byTag: stripped.removedByTag,
+        repaired: false,
+        residual: stripped.residual
+      };
+      if (stripped.dangling.length) {
+        try {
+          const repaired = await streamWithRetry(
+            {
+              model: usedModel,
+              system,
+              prompt: repairUiPrompt(stripped.dangling, final),
+              maxOutputTokens: 30000,
+              temperature: 0.8,
+              signal
+            },
+            {
+              onDelta: () => {},
+              onRetry: (attempt) =>
+                handlers.onWarning?.(`Cleanup connection interrupted. Retry ${attempt}/3…`)
+            }
+          );
+          const repairedCode = cleanOutput(repaired.text);
+          if (repairedCode.length > 40 && isCompleteDocument(repairedCode)) {
+            const again = stripFilmUi(repairedCode);
+            final = again.code;
+            cleanup.repaired = true;
+            cleanup.residual = again.residual;
+          }
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          handlers.onWarning?.('The cleanup pass did not finish; the stripped scene was kept.');
+        }
+      }
+      violations = lintDesign(final);
+      if (cleanup.residual.length) {
+        handlers.onWarning?.(`Some app controls could not be removed: ${cleanup.residual.join(', ')}.`);
+      }
+      cleanup.summary = summarizeCleanup(cleanup);
+    }
+
+    handlers.onPhase?.({ phase: 'measuring' });
+    const detected = await detectFilmDuration(final, {
+      width,
+      height,
+      requested: duration,
+      signal
+    });
+    finalDuration = detected.duration;
+    const durationAdjusted = detected.warning === 'extended';
+
     lastGoodModel = { id: usedModel, at: Date.now() };
-    cacheSet(cacheKey, final);
+    cacheSet(cacheKey, {
+      code: final,
+      duration: finalDuration,
+      durationSource: detected.source,
+      cleanup
+    });
     handlers.onDone?.({
       code: final,
       model: usedModel,
       cached: false,
       violations: lintDesign(final),
       direction: directionId,
-      usage
+      usage,
+      duration: finalDuration,
+      requestedDuration: duration,
+      durationSource: detected.source,
+      durationAdjusted,
+      cleanup
     });
   } catch (error) {
     const normalized =
@@ -782,7 +944,7 @@ async function generationCandidates(model) {
   return list;
 }
 
-async function testModel(chosen) {
+async function testModel(chosen, keyOverride) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 9000);
   const started = Date.now();
@@ -796,7 +958,7 @@ async function testModel(chosen) {
   const send = () =>
     fetch(`${API_BASE}/models/${encodeURIComponent(chosen)}:generateContent`, {
       method: 'POST',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      headers: authHeaders({ 'Content-Type': 'application/json' }, keyOverride),
       body: JSON.stringify(body),
       signal: controller.signal
     });
@@ -848,6 +1010,27 @@ export async function testConnection(model) {
       if (error instanceof AiError && ['NO_KEY', 'INVALID_KEY', 'CANCELLED'].includes(error.code)) {
         throw error;
       }
+      lastError = error;
+    }
+  }
+  throw lastError || new AiError('Could not reach Gemini.', 'NETWORK', true);
+}
+
+export async function testConnectionWithKey(keyValue, model) {
+  const key = String(keyValue || '').trim();
+  if (!key) throw new AiError('No API key provided.', 'NO_KEY', false);
+  const candidates = [];
+  if (model && String(model).trim()) candidates.push(String(model).trim());
+  for (const id of PREFERRED_MODELS) {
+    if (!candidates.includes(id)) candidates.push(id);
+  }
+  if (!candidates.length) candidates.push('gemini-2.5-flash');
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      return await testModel(candidate, key);
+    } catch (error) {
+      if (error instanceof AiError && error.code === 'INVALID_KEY') throw error;
       lastError = error;
     }
   }

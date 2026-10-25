@@ -5,6 +5,7 @@ import puppeteer from 'puppeteer-core';
 import ffmpegPath from 'ffmpeg-static';
 import { CHROME_PATH, RENDERS_DIR, readRuntime } from './config.js';
 import { composeDocument } from '../shared/compose.js';
+import { measurePageDuration, parseDeclaredDuration, resolveFilmDuration } from './duration.js';
 
 const QUALITY = {
   draft: { format: 'jpeg', jpegQuality: 90, crf: 21, preset: 'veryfast' },
@@ -42,7 +43,7 @@ function isPrivateHost(hostname) {
   return false;
 }
 
-function shouldBlockRequest(rawUrl) {
+export function shouldBlockRequest(rawUrl) {
   if (/^(data:|blob:|about:)/i.test(rawUrl)) return false;
   let url;
   try {
@@ -233,7 +234,7 @@ export async function renderFilm(options) {
     designWidth,
     designHeight,
     fps = 60,
-    duration = 10,
+    duration: requestedDuration = 10,
     quality = 'high',
     onProgress = () => {},
     signal
@@ -246,12 +247,13 @@ export async function renderFilm(options) {
   const cssHeight = Number(designHeight) || height;
   const deviceScaleFactor = Math.min(3, Math.max(0.25, width / cssWidth));
   if (!Number.isFinite(fps) || fps < 1 || fps > 120) throw new Error('Invalid fps');
-  if (!Number.isFinite(duration) || duration < 0.2 || duration > 120) {
+  if (!Number.isFinite(requestedDuration) || requestedDuration < 0.2 || requestedDuration > 120) {
     throw new Error('Invalid duration');
   }
 
   const settings = QUALITY[quality] || QUALITY.high;
-  const totalFrames = Math.max(1, Math.round(duration * fps));
+  let duration = requestedDuration;
+  let totalFrames = Math.max(1, Math.round(duration * fps));
   const outPath = path.join(RENDERS_DIR, `${id}.mp4`);
   const tmpPath = path.join(RENDERS_DIR, `${id}.partial.mp4`);
   const posterPath = path.join(RENDERS_DIR, `${id}.jpg`);
@@ -310,6 +312,24 @@ export async function renderFilm(options) {
       await sleep(60);
     }
     if (!ready) warnings.push('Page did not finish loading in time; rendered anyway.');
+
+    let detected = null;
+    try {
+      const probe = await measurePageDuration(page);
+      detected = resolveFilmDuration({
+        requested: requestedDuration,
+        declared: parseDeclaredDuration(code),
+        measured: probe.measured,
+        indefinite: probe.indefinite
+      });
+      if (Math.abs(detected.duration - duration) >= 0.05) {
+        duration = detected.duration;
+        totalFrames = Math.max(1, Math.round(duration * fps));
+        onProgress({ phase: 'loading', frame: 0, total: totalFrames, elapsed: 0, duration });
+      }
+    } catch (e) {
+      warnings.push('Could not measure the animation end; used the requested length.');
+    }
 
     ffmpeg = await spawnEncoder({
       outPath: tmpPath,
@@ -419,6 +439,9 @@ export async function renderFilm(options) {
       frames: totalFrames,
       bytes: stats.size,
       quality,
+      requestedDuration,
+      durationChanged: Math.abs(totalFrames / fps - requestedDuration) >= 0.05,
+      durationSource: detected?.source || 'requested',
       elapsedMs: Date.now() - started,
       warnings
     };

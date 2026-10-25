@@ -30,7 +30,8 @@ export function formatDuration(seconds) {
 
 export function formatDate(ts) {
   try {
-    return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const lang = document.documentElement.lang === 'fa' ? 'fa-IR' : undefined;
+    return new Date(ts).toLocaleDateString(lang, { month: 'short', day: 'numeric' });
   } catch (e) {
     return '';
   }

@@ -2,8 +2,9 @@ import { icon, hydrateIcons } from './icons.js';
 import { DESIGNS, Preview } from './preview.js';
 import { createEditor } from './editor.js';
 import { PRESETS, loadPreset, presetArtHtml } from './presets.js';
-import { aiHealth, aiModels, aiDirections, aiTest, generate } from './ai-client.js';
+import { aiHealth, aiModels, aiDirections, aiTest, generate, setGeminiKey } from './ai-client.js';
 import { renderFilm } from './render-client.js';
+import { getLang, setLang, t, localize, applyDocumentLang, toggleLang, LANG_KEY } from './i18n.js';
 import {
   escapeHtml,
   clamp,
@@ -21,47 +22,114 @@ const STORE_KEY = 'ms.studio.v1';
 const STATIC_DEMO =
   /(^|\.)github\.io$/i.test(location.hostname) || !/^\/(?:index\.html)?$/.test(location.pathname);
 const DEFAULT_TITLE = 'Untitled Motion';
-const QUALITY_LABEL = { draft: 'Draft', high: 'High', max: 'Max' };
+const QUALITY_KEY = { draft: 'render.quality.draft', high: 'render.quality.high', max: 'render.quality.max' };
 const RES_LABEL = { 720: '720p', 1080: '1080p', 1440: '1440p' };
-const PHASE_LABEL = {
-  testing: 'Testing your key',
-  reconnecting: 'Reconnecting',
-  connecting: 'Connecting',
-  writing: 'Writing the scene',
-  refining: 'Sharpening the art direction',
-  ready: 'Scene ready'
+const PHASE_KEY = {
+  testing: 'phase.testing',
+  reconnecting: 'phase.reconnecting',
+  connecting: 'phase.connecting',
+  writing: 'phase.writing',
+  cleaning: 'phase.cleaning',
+  measuring: 'phase.measuring',
+  refining: 'phase.refining',
+  ready: 'phase.ready'
 };
 
 const IDEAS = [
-  'A typographic countdown to the last train home — numbers, rules, one moving line.',
-  'A field guide to silence: three words arriving slowly, broken once by a hard geometric event.',
-  'A museum label for an imaginary object called “The Everyday Sun”.',
-  'The rules of a game that does not exist, numbered and typeset like a manifesto.',
-  'A study of one square: it divides, rotates, becomes a window, a page, a horizon.',
-  'A love letter told in timestamps and coordinates.',
-  'An index of small weather — wind, rain, heat, fog — each with its own type treatment.',
-  'The life of a paper plane in six cuts: fold, throw, glide, stall, land, unfold.'
+  {
+    en: 'A typographic countdown to the last train home — numbers, rules, one moving line.',
+    fa: 'یک شمارش تایپوگرافیک تا آخرین قطار شب — عددها، خط‌ها و یک خط متحرک.'
+  },
+  {
+    en: 'A field guide to silence: three words arriving slowly, broken once by a hard geometric event.',
+    fa: 'راهنمای میدانی سکوت: سه واژه که آرام می‌رسند و یک اتفاق هندسی سخت آن را می‌شکند.'
+  },
+  {
+    en: 'A museum label for an imaginary object called “The Everyday Sun”.',
+    fa: 'برچسب موزه برای یک شیء خیالی به نام «خورشید روزمره».'
+  },
+  {
+    en: 'The rules of a game that does not exist, numbered and typeset like a manifesto.',
+    fa: 'قواعد یک بازی که وجود ندارد، شماره‌گذاری‌شده و مثل یک بیانیه حروف‌چینی‌شده.'
+  },
+  {
+    en: 'A study of one square: it divides, rotates, becomes a window, a page, a horizon.',
+    fa: 'مطالعه یک مربع: تقسیم می‌شود، می‌چرخد، پنجره می‌شود، صفحه می‌شود، افق می‌شود.'
+  },
+  {
+    en: 'A love letter told in timestamps and coordinates.',
+    fa: 'نامه عاشقانه‌ای که با زمان و مختصات نوشته شده است.'
+  },
+  {
+    en: 'An index of small weather — wind, rain, heat, fog — each with its own type treatment.',
+    fa: 'فهرستی از هوای کوچک — باد، باران، گرما، مه — هر کدام با حروف‌چینی خودش.'
+  },
+  {
+    en: 'The life of a paper plane in six cuts: fold, throw, glide, stall, land, unfold.',
+    fa: 'زندگی یک هواپیمای کاغذی در شش برش: تا، پرتاب، سرخوردن، ایست، فرود، باز شدن.'
+  }
 ];
+
+function qualityLabel(value) {
+  return t(QUALITY_KEY[value] || value);
+}
+
+function displayTitle(title) {
+  return !title || title === DEFAULT_TITLE ? t('project.untitled') : title;
+}
+
+function ideaText(idea) {
+  return getLang() === 'fa' ? idea.fa : idea.en;
+}
+
+function directionLabel(direction) {
+  if (!direction) return t('direction.editorial');
+  return t(`direction.${direction.id}`) === `direction.${direction.id}`
+    ? direction.name || direction.id
+    : t(`direction.${direction.id}`);
+}
+
+const PRESET_SUB_KEYS = {
+  editorial: 'preset.sub.editorial',
+  paper: 'preset.sub.paper',
+  swiss: 'preset.sub.swiss',
+  riso: 'preset.sub.riso',
+  technical: 'preset.sub.technical',
+  organic: 'preset.sub.organic',
+  constructivist: 'preset.sub.constructivist',
+  cinematic: 'preset.sub.cinematic'
+};
+
+function presetSub(preset) {
+  const category = String(preset.sub || '').split('·')[0].trim().toLowerCase();
+  const key = PRESET_SUB_KEYS[category];
+  return key ? t(key, { d: preset.duration }) : preset.sub;
+}
 
 const SNIPPETS = [
   {
     label: 'Keyframes',
+    key: 'snippet.keyframes',
     text: `\n<style>\n  @keyframes reveal {\n    from { transform: translateY(110%); }\n    to   { transform: translateY(0); }\n  }\n  .line { overflow: hidden; display: block; }\n  .line > span {\n    display: block;\n    animation: reveal 900ms cubic-bezier(.2,.8,.2,1) both;\n  }\n</style>\n`
   },
   {
     label: 'Stagger',
+    key: 'snippet.stagger',
     text: `\n<script>\n  document.querySelectorAll('[data-line]').forEach(function (el, i) {\n    el.style.animationDelay = (300 + i * 120) + 'ms';\n  });\n</script>\n`
   },
   {
     label: 'SVG draw',
+    key: 'snippet.svg',
     text: `\n<svg viewBox="0 0 100 100" style="position:absolute;inset:0;width:100%;height:100%">\n  <path d="M10 80 L50 20 L90 80" fill="none" stroke="#E23D28" stroke-width=".6"\n        stroke-dasharray="200" stroke-dashoffset="200">\n    <animate attributeName="stroke-dashoffset" from="200" to="0"\n             dur="2s" begin=".4s" fill="freeze" />\n  </path>\n</svg>\n`
   },
   {
     label: 'Type scale',
+    key: 'snippet.scale',
     text: `\n<div style="position:absolute;left:6%;right:6%;top:30%">\n  <div style="font-size:15vh;line-height:.86;letter-spacing:-.055em;font-weight:800">\n    SCALE<br>IS A<br>RHYTHM\n  </div>\n</div>\n`
   },
   {
     label: 'Time loop',
+    key: 'snippet.loop',
     text: `\n<script>\n  var el = document.querySelector('.move');\n  function frame() {\n    var t = performance.now() / 1000;\n    el.style.transform = 'translateY(' + (Math.sin(t * 1.4) * 40) + 'px)';\n    requestAnimationFrame(frame);\n  }\n  requestAnimationFrame(frame);\n</script>\n`
   }
 ];
@@ -133,6 +201,7 @@ let installEvent = null;
 let confirmAction = null;
 let scrubStart = 0;
 let scrubTarget = 0;
+let keyNotice = { text: '', kind: '', until: 0 };
 
 const schedulePreview = debounce(() => {
   if (generating) {
@@ -154,6 +223,27 @@ function iconHtml(name, size = 16) {
   return icon(name, size);
 }
 
+function syncLangButton() {
+  const label = document.getElementById('btn-lang-label');
+  if (label) label.textContent = getLang() === 'fa' ? 'EN' : 'FA';
+  const button = document.getElementById('btn-lang');
+  if (button) {
+    button.setAttribute('aria-label', t('top.lang'));
+    button.setAttribute('title', t('top.lang'));
+  }
+}
+
+function changeLanguage(lang) {
+  if (getLang() === lang) return;
+  if (generating || rendering) {
+    toast(t('toast.busy'));
+    return;
+  }
+  setLang(lang);
+  saveSoon.flush();
+  location.reload();
+}
+
 /* ---------------------------------------------------------------- templates */
 
 function aspectButtonsHtml() {
@@ -167,10 +257,10 @@ function createViewHtml() {
   <section class="view" data-view="create">
     <div class="project-head">
       <div class="project-title-row">
-        <h1 class="project-title" id="c-title">${DEFAULT_TITLE}</h1>
-        <button class="name-edit" id="c-rename" aria-label="Rename project">${iconHtml('pencil', 14)}</button>
+        <h1 class="project-title" id="c-title">${escapeHtml(displayTitle(state.title))}</h1>
+        <button class="name-edit" id="c-rename" aria-label="${escapeHtml(t('create.rename'))}">${iconHtml('pencil', 14)}</button>
       </div>
-      <button class="format-meta" id="c-format" title="Stage settings">
+      <button class="format-meta" id="c-format" title="${escapeHtml(t('create.stageSettings'))}">
         ${iconHtml('film', 12)}
         <b id="fmt-aspect">9:16</b>
         <span>·</span>
@@ -183,37 +273,37 @@ function createViewHtml() {
       </button>
     </div>
 
-    <div class="aspects" id="aspects" role="group" aria-label="Aspect ratio">
+    <div class="aspects" id="aspects" role="group" aria-label="${escapeHtml(t('create.aspectRatio'))}">
       ${aspectButtonsHtml()}
     </div>
 
     <div class="stage-card">
       <div class="stage" id="stage">
         <div class="film" id="film">
-          <iframe id="preview-frame" sandbox="allow-scripts" title="Motion preview" tabindex="-1"></iframe>
+          <iframe id="preview-frame" sandbox="allow-scripts" title="${escapeHtml(t('create.previewTitle'))}" tabindex="-1"></iframe>
           <div class="film-empty" id="film-empty">
             <div class="empty-inner">
               <div class="empty-glyph">${iconHtml('spark', 22)}</div>
-              <div class="empty-title">A stage with nothing on it</div>
-              <div class="empty-body">Describe a scene and the studio writes a deterministic film — or start from one of eight originals.</div>
+              <div class="empty-title">${escapeHtml(t('create.emptyTitle'))}</div>
+              <div class="empty-body">${escapeHtml(t('create.emptyBody'))}</div>
               <div class="empty-actions">
-                <button class="btn primary small" id="empty-ai">${iconHtml('spark', 14)} Write with AI</button>
-                <button class="btn secondary small" id="empty-presets">${iconHtml('grid', 14)} Presets</button>
+                <button class="btn primary small" id="empty-ai">${iconHtml('spark', 14)} ${escapeHtml(t('create.writeAi'))}</button>
+                <button class="btn secondary small" id="empty-presets">${iconHtml('grid', 14)} ${escapeHtml(t('create.presets'))}</button>
               </div>
             </div>
           </div>
           <div class="stage-loader hidden" id="stage-loader">
             <div class="loader-line"></div>
-            <span>Settling frame</span>
+            <span>${escapeHtml(t('create.settling'))}</span>
           </div>
           <div class="stage-overlay hidden" id="stage-overlay">
-            <button class="play-orb" id="play-orb" aria-label="Play film">${iconHtml('play', 20)}</button>
+            <button class="play-orb" id="play-orb" aria-label="${escapeHtml(t('create.play'))}">${iconHtml('play', 20)}</button>
           </div>
           <div class="guides" id="guides"></div>
           <div class="overflow-chip hidden" id="overflow-chip">
             <span>${iconHtml('warning', 12)}</span>
-            <span id="overflow-text">Content leaves the frame</span>
-            <button id="overflow-fix">Fix</button>
+            <span id="overflow-text"></span>
+            <button id="overflow-fix">${escapeHtml(t('create.fix'))}</button>
           </div>
         </div>
       </div>
@@ -224,17 +314,17 @@ function createViewHtml() {
     </div>
 
     <div class="player hidden" id="player">
-      <button class="player-btn" id="play-btn" aria-label="Play film">${iconHtml('play', 15)}</button>
+      <button class="player-btn" id="play-btn" aria-label="${escapeHtml(t('create.play'))}">${iconHtml('play', 15)}</button>
       <span class="time"><span id="time-now">0.00</span><span class="total" id="time-total"> / 10.00</span></span>
-      <div class="scrub" id="scrub" role="slider" aria-label="Timeline" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0" tabindex="0">
+      <div class="scrub" id="scrub" role="slider" aria-label="${escapeHtml(t('create.timeline'))}" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0" tabindex="0">
         <div class="scrub-track"><div class="scrub-fill" id="scrub-fill"></div></div>
         <div class="scrub-knob" id="scrub-knob"></div>
       </div>
     </div>
 
     <div class="action-row">
-      <button class="btn secondary" id="btn-ai">${iconHtml('spark', 15)} Write with AI</button>
-      <button class="btn primary" id="btn-export" disabled>${iconHtml('export', 15)} Export MP4</button>
+      <button class="btn secondary" id="btn-ai">${iconHtml('spark', 15)} ${escapeHtml(t('create.writeAi'))}</button>
+      <button class="btn primary" id="btn-export" disabled>${iconHtml('export', 15)} ${escapeHtml(t('create.export'))}</button>
     </div>
 
     <div class="meta-strip" id="meta-strip"></div>
@@ -246,45 +336,48 @@ function codeViewHtml() {
   <section class="view" data-view="code" hidden>
     <div class="page-head">
       <div>
-        <h2>Motion <span class="serif">code</span></h2>
-        <div class="page-sub">One document. No build step. The clock is injected.</div>
+        <h2>${t('code.titleHtml')}</h2>
+        <div class="page-sub">${escapeHtml(t('code.sub'))}</div>
       </div>
-      <span class="count-chip" id="code-count">0 lines</span>
+      <span class="count-chip" id="code-count">${escapeHtml(t('code.lines', { n: 0 }))}</span>
     </div>
 
     <div class="tools">
-      <button class="tool ai" id="btn-code-ai">${iconHtml('spark', 14)} Ask AI</button>
-      <button class="tool" id="btn-code-presets">${iconHtml('grid', 14)} Presets</button>
-      <button class="tool" id="btn-code-copy">${iconHtml('copy', 14)} Copy</button>
-      <button class="tool" id="btn-code-reload">${iconHtml('refresh', 14)} Reload</button>
+      <button class="tool ai" id="btn-code-ai">${iconHtml('spark', 14)} ${escapeHtml(t('code.askAi'))}</button>
+      <button class="tool" id="btn-code-presets">${iconHtml('grid', 14)} ${escapeHtml(t('create.presets'))}</button>
+      <button class="tool" id="btn-code-copy">${iconHtml('copy', 14)} ${escapeHtml(t('code.copy'))}</button>
+      <button class="tool" id="btn-code-reload">${iconHtml('refresh', 14)} ${escapeHtml(t('code.reload'))}</button>
     </div>
 
     <div class="snippets" id="snippets">
-      ${SNIPPETS.map((s) => `<button class="chip" data-snippet="${escapeHtml(s.label)}">${escapeHtml(s.label)}</button>`).join('')}
+      ${SNIPPETS.map(
+        (s) =>
+          `<button class="chip" data-snippet="${escapeHtml(s.label)}">${escapeHtml(t(s.key))}</button>`
+      ).join('')}
     </div>
 
     <div class="editor-card" id="editor-card">
       <div class="editor-bar">
         <span class="editor-file" id="editor-file"><i class="live-dot"></i> index.html</span>
         <div class="editor-actions">
-          <button class="icon-btn sm" id="btn-code-copy2" aria-label="Copy code">${iconHtml('copy', 14)}</button>
-          <button class="icon-btn sm" id="btn-code-expand" aria-label="Toggle focus mode">${iconHtml('expand', 14)}</button>
+          <button class="icon-btn sm" id="btn-code-copy2" aria-label="${escapeHtml(t('code.copyAria'))}">${iconHtml('copy', 14)}</button>
+          <button class="icon-btn sm" id="btn-code-expand" aria-label="${escapeHtml(t('code.focusAria'))}">${iconHtml('expand', 14)}</button>
         </div>
       </div>
       <div class="editor-host" id="editor-host"></div>
       <div class="editor-empty-note" id="editor-empty">
         ${iconHtml('spark', 20)}
-        <div><b>Start with a blank page</b>Ask the studio, or paste your own HTML/CSS/JS.</div>
+        <div><b>${escapeHtml(t('code.blankTitle'))}</b>${escapeHtml(t('code.blankBody'))}</div>
       </div>
     </div>
 
     <div class="code-status" id="code-status">
       <span class="dot-status"></span>
-      <span id="code-status-text">Live · edits preview after a short pause</span>
+      <span id="code-status-text">${escapeHtml(t('code.live'))}</span>
     </div>
     <div class="editor-footer" style="padding:8px 19px 0">
       <span id="code-size">0 KB</span>
-      <span class="right">Deterministic clock armed</span>
+      <span class="right">${escapeHtml(t('code.clock'))}</span>
     </div>
   </section>`;
 }
@@ -294,10 +387,10 @@ function libraryViewHtml() {
   <section class="view" data-view="library" hidden>
     <div class="page-head">
       <div>
-        <h2>The <span class="serif">library</span></h2>
-        <div class="page-sub">Every export, kept on this machine.</div>
+        <h2>${t('library.titleHtml')}</h2>
+        <div class="page-sub">${escapeHtml(t('library.sub'))}</div>
       </div>
-      <span class="count-chip" id="lib-count">0 films</span>
+      <span class="count-chip" id="lib-count">${escapeHtml(t('library.count', { n: 0 }))}</span>
     </div>
     <div class="library-grid" id="lib-body"></div>
   </section>`;
@@ -308,19 +401,37 @@ function settingsViewHtml() {
   <section class="view" data-view="settings" hidden>
     <div class="page-head">
       <div>
-        <h2>Studio <span class="serif">settings</span></h2>
-        <div class="page-sub">Stage, export and intelligence.</div>
+        <h2>${t('settings.titleHtml')}</h2>
+        <div class="page-sub">${escapeHtml(t('settings.sub'))}</div>
       </div>
     </div>
 
     <div class="settings-wrap">
-      <div class="settings-card">
-        <div class="settings-head"><h3>Stage</h3><span class="hint">DESIGN VIEWPORT</span></div>
+      <div class="settings-card" id="lang-card">
+        <div class="settings-head"><h3>${escapeHtml(t('settings.language'))}</h3><span class="hint">FA / EN</span></div>
         <div class="setting">
           <div class="setting-row">
             <div class="setting-label">
-              <span class="name">Frame</span>
-              <span class="desc">Authored at 1080 on the long edge. Resolution never moves the layout.</span>
+              <span class="name">${escapeHtml(t('settings.language'))}</span>
+              <span class="desc">${escapeHtml(t('settings.languageDesc'))}</span>
+            </div>
+          </div>
+          <div class="setting-extra">
+            <div class="seg wide" id="set-language">
+              <button data-value="fa">${escapeHtml(t('settings.languageFa'))}</button>
+              <button data-value="en">${escapeHtml(t('settings.languageEn'))}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-head"><h3>${escapeHtml(t('settings.stage'))}</h3><span class="hint">${escapeHtml(t('settings.designViewport'))}</span></div>
+        <div class="setting">
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="name">${escapeHtml(t('settings.frame'))}</span>
+              <span class="desc">${escapeHtml(t('settings.frameDesc'))}</span>
             </div>
           </div>
           <div class="setting-extra">
@@ -332,31 +443,31 @@ function settingsViewHtml() {
         <div class="setting">
           <div class="setting-row">
             <div class="setting-label">
-              <span class="name">Duration</span>
-              <span class="desc">Seconds of film. Every frame is captured.</span>
+              <span class="name">${escapeHtml(t('settings.duration'))}</span>
+              <span class="desc">${escapeHtml(t('settings.durationDesc'))}</span>
             </div>
             <span class="setting-value" id="duration-value">10s</span>
           </div>
           <div class="setting-extra">
-            <input class="range" id="set-duration" type="range" min="2" max="30" step="1" value="10" aria-label="Duration in seconds">
+            <input class="range" id="set-duration" type="range" min="2" max="30" step="1" value="10" aria-label="${escapeHtml(t('settings.duration'))}">
           </div>
         </div>
         <div class="setting">
           <div class="setting-row">
             <div class="setting-label">
-              <span class="name">Safe-area guides</span>
-              <span class="desc">5% margins and centre line over the stage.</span>
+              <span class="name">${escapeHtml(t('settings.safeGuides'))}</span>
+              <span class="desc">${escapeHtml(t('settings.safeGuidesDesc'))}</span>
             </div>
-            <button class="switch" id="set-guides" role="switch" aria-checked="false" aria-label="Safe-area guides"></button>
+            <button class="switch" id="set-guides" role="switch" aria-checked="false" aria-label="${escapeHtml(t('settings.safeGuides'))}"></button>
           </div>
         </div>
       </div>
 
       <div class="settings-card">
-        <div class="settings-head"><h3>Export</h3><span class="hint">H.264 / BT.709</span></div>
+        <div class="settings-head"><h3>${escapeHtml(t('settings.export'))}</h3><span class="hint">${escapeHtml(t('settings.exportHint'))}</span></div>
         <div class="setting">
           <div class="setting-row">
-            <div class="setting-label"><span class="name">Resolution</span><span class="desc">Matches the frame, only denser.</span></div>
+            <div class="setting-label"><span class="name">${escapeHtml(t('settings.resolution'))}</span><span class="desc">${escapeHtml(t('settings.resolutionDesc'))}</span></div>
             <span class="setting-value" id="set-res-value">1080p</span>
           </div>
           <div class="setting-extra">
@@ -369,7 +480,7 @@ function settingsViewHtml() {
         </div>
         <div class="setting">
           <div class="setting-row">
-            <div class="setting-label"><span class="name">Frame rate</span><span class="desc">Constant rate, no duplication.</span></div>
+            <div class="setting-label"><span class="name">${escapeHtml(t('settings.frameRate'))}</span><span class="desc">${escapeHtml(t('settings.frameRateDesc'))}</span></div>
             <span class="setting-value" id="set-fps-value">60</span>
           </div>
           <div class="setting-extra">
@@ -381,75 +492,93 @@ function settingsViewHtml() {
         </div>
         <div class="setting">
           <div class="setting-row">
-            <div class="setting-label"><span class="name">Quality</span><span class="desc">Draft is faster; Max is near-lossless.</span></div>
+            <div class="setting-label"><span class="name">${escapeHtml(t('settings.quality'))}</span><span class="desc">${escapeHtml(t('settings.qualityDesc'))}</span></div>
           </div>
           <div class="setting-extra">
             <div class="seg wide" id="set-quality">
-              <button data-value="draft">Draft</button>
-              <button data-value="high">High</button>
-              <button data-value="max">Max</button>
+              <button data-value="draft">${escapeHtml(t('render.quality.draft'))}</button>
+              <button data-value="high">${escapeHtml(t('render.quality.high'))}</button>
+              <button data-value="max">${escapeHtml(t('render.quality.max'))}</button>
             </div>
           </div>
         </div>
         <div class="setting">
           <div class="setting-row">
-            <div class="setting-label"><span class="name">Frames to capture</span><span class="desc">Duration × frame rate.</span></div>
+            <div class="setting-label"><span class="name">${escapeHtml(t('settings.framesToCapture'))}</span><span class="desc">${escapeHtml(t('settings.framesDesc'))}</span></div>
             <span class="setting-value" id="set-frames">600</span>
           </div>
         </div>
         <div class="setting">
-          <button class="btn primary block" id="set-render">${iconHtml('export', 15)} Render MP4</button>
+          <button class="btn primary block" id="set-render">${iconHtml('export', 15)} ${escapeHtml(t('settings.render'))}</button>
+        </div>
+      </div>
+
+      <div class="settings-card" id="key-card">
+        <div class="settings-head"><h3>${escapeHtml(t('settings.keyTitle'))}</h3><span class="hint">GEMINI</span></div>
+        <div class="setting">
+          <p class="setting-desc">${escapeHtml(t('settings.keyDesc'))}</p>
+          <div class="key-form" id="key-form">
+            <input class="text-input" id="key-input" type="password" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(t('settings.keyPlaceholder'))}" aria-label="${escapeHtml(t('settings.keyTitle'))}">
+            <div class="row-actions">
+              <button class="btn primary small" id="key-save">${iconHtml('key', 13)} ${escapeHtml(t('settings.keySave'))}</button>
+              <a class="btn secondary small" id="key-get" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">${iconHtml('link', 13)} ${escapeHtml(t('settings.keyGet'))}</a>
+            </div>
+          </div>
+          <div class="key-status" id="key-status"></div>
+          <p class="key-hint">${escapeHtml(t('settings.keyHelp'))}</p>
+          <p class="key-hint" id="key-loopback">${escapeHtml(t('settings.keyLoopback'))}</p>
+          <p class="key-hint hidden" id="key-static">${escapeHtml(t('settings.keyStatic'))}</p>
         </div>
       </div>
 
       <div class="settings-card">
-        <div class="settings-head"><h3>Intelligence</h3><span class="hint" id="set-ai-model">GEMINI</span></div>
+        <div class="settings-head"><h3>${escapeHtml(t('settings.intelligence'))}</h3><span class="hint" id="set-ai-model">GEMINI</span></div>
         <div class="setting">
           <div class="status-line">
             <span class="status-dot" id="set-ai-dot"></span>
-            <span id="set-ai-text">Checking your key…</span>
+            <span id="set-ai-text">${escapeHtml(t('ai.checking'))}</span>
           </div>
           <div class="row-actions" style="margin-top:9px">
-            <button class="btn secondary tiny" id="set-ai-test">${iconHtml('bolt', 13)} Test key</button>
-            <button class="btn secondary tiny" id="set-ai-write">${iconHtml('spark', 13)} Write with AI</button>
+            <button class="btn secondary tiny" id="set-ai-test">${iconHtml('bolt', 13)} ${escapeHtml(t('common.testKey'))}</button>
+            <button class="btn secondary tiny" id="set-ai-write">${iconHtml('spark', 13)} ${escapeHtml(t('create.writeAi'))}</button>
           </div>
         </div>
         <div class="setting">
           <div class="setting-row">
-            <div class="setting-label"><span class="name">Model</span><span class="desc">Flash models are tested first for speed.</span></div>
+            <div class="setting-label"><span class="name">${escapeHtml(t('settings.model'))}</span><span class="desc">${escapeHtml(t('settings.modelDesc'))}</span></div>
           </div>
           <button class="select-row" id="set-model" style="margin-top:8px">
-            <span id="model-name">Auto · fastest Flash</span>
+            <span id="model-name">${escapeHtml(t('settings.autoFlash'))}</span>
             ${iconHtml('chevronRight', 13)}
           </button>
         </div>
         <div class="setting">
           <div class="setting-row">
             <div class="setting-label">
-              <span class="name">Strict art direction</span>
-              <span class="desc">Blocks gradients, neon, glass and AI-default palettes.</span>
+              <span class="name">${escapeHtml(t('settings.strict'))}</span>
+              <span class="desc">${escapeHtml(t('settings.strictDesc'))}</span>
             </div>
-            <button class="switch" id="set-strict" role="switch" aria-checked="true" aria-label="Strict art direction"></button>
+            <button class="switch" id="set-strict" role="switch" aria-checked="true" aria-label="${escapeHtml(t('settings.strict'))}"></button>
           </div>
         </div>
         <div class="setting">
-          <div class="sheet-label"><span>Art direction</span></div>
+          <div class="sheet-label"><span>${escapeHtml(t('settings.artDirection'))}</span></div>
           <div class="dir-grid" id="dir-grid"></div>
         </div>
       </div>
 
       <div class="info-note">
         ${iconHtml('key', 14)}
-        <span>Your Gemini key lives in <b>.env</b> on the server. Before every task the studio runs a tiny live test, retries quietly, and only then writes.</span>
+        <span>${t('settings.keyNote')}</span>
       </div>
 
       <div class="settings-card">
-        <div class="settings-head"><h3>Engine</h3><span class="hint" id="about-version">v1.0</span></div>
+        <div class="settings-head"><h3>${escapeHtml(t('settings.engine'))}</h3><span class="hint" id="about-version">v1.0</span></div>
         <div class="about-lines" id="about-lines"></div>
         <div class="setting">
           <div class="row-actions">
-            <button class="btn secondary small" id="btn-install">${iconHtml('monitor', 14)} Install app</button>
-            <button class="btn ghost small" id="btn-reset">${iconHtml('reset', 14)} Reset workspace</button>
+            <button class="btn secondary small" id="btn-install">${iconHtml('monitor', 14)} ${escapeHtml(t('settings.install'))}</button>
+            <button class="btn ghost small" id="btn-reset">${iconHtml('reset', 14)} ${escapeHtml(t('settings.reset'))}</button>
           </div>
         </div>
       </div>
@@ -466,6 +595,9 @@ function mountViews() {
 /* ---------------------------------------------------------------- boot */
 
 function boot() {
+  applyDocumentLang();
+  localize(document);
+  syncLangButton();
   mountViews();
   cacheElements();
   initPreview();
@@ -482,15 +614,16 @@ function boot() {
     overview = {
       configured: false,
       ok: false,
-      error: 'Static preview — AI and export run on the local studio.',
+      error: t('ai.status.static'),
       checking: false,
       defaultModel: '',
       modelCount: 0
     };
     renderAbout();
     updateAiStatusUi();
+    syncSettings();
     renderDirections();
-    setTimeout(() => toast('Static preview · AI and MP4 export run on the local studio.'), 1100);
+    setTimeout(() => toast(t('toast.staticBoot')), 1100);
   } else {
     refreshServerHealth();
     refreshAiHealth();
@@ -509,7 +642,7 @@ function boot() {
     event.preventDefault();
     installEvent = event;
   });
-  window.addEventListener('appinstalled', () => toast('Motion Studio installed.'));
+  window.addEventListener('appinstalled', () => toast(t('toast.installed')));
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && preview && preview.playing) preview.pause();
   });
@@ -535,11 +668,12 @@ function cacheElements() {
     'set-res-value', 'set-resolution', 'set-fps-value', 'set-fps', 'set-quality', 'set-frames',
     'set-render', 'set-ai-dot', 'set-ai-text', 'set-ai-model', 'set-ai-test', 'set-ai-write',
     'set-model', 'model-name', 'set-strict', 'dir-grid', 'about-lines', 'about-version',
-    'btn-install', 'btn-reset',
+    'btn-install', 'btn-reset', 'btn-lang', 'btn-lang-label', 'set-language',
+    'key-input', 'key-save', 'key-get', 'key-status', 'key-form', 'key-static', 'key-loopback', 'key-card',
     'sheet-ai', 'ai-status-dot', 'ai-status-text', 'ai-test-btn', 'ai-mode', 'ai-prompt',
     'ai-prompt-hint', 'ai-prompt-count', 'ai-ideas', 'ai-directions', 'ai-direction-label',
     'ai-strict', 'ai-gen-panel', 'ai-gen-phase', 'ai-gen-time', 'ai-gen-meta', 'ai-error',
-    'ai-error-text', 'ai-key-setup', 'ai-retest-key', 'ai-surprise', 'ai-generate',
+    'ai-error-text', 'ai-key-setup', 'ai-open-key-settings', 'ai-surprise', 'ai-generate',
     'sheet-presets', 'preset-grid', 'sheet-render', 'render-name', 'render-summary-meta',
     'render-res', 'render-res-value', 'render-fps', 'render-quality', 'render-quality-value',
     'render-output', 'render-estimate', 'render-form', 'render-progress', 'progress-name',
@@ -630,14 +764,19 @@ function onPreviewMetrics(metrics, errors) {
   if (!metrics) return;
   const overflow = metrics.overflowX || metrics.overflowY;
   if (overflow && state.code.trim()) {
-    const axis = metrics.overflowX && metrics.overflowY ? 'right and bottom' : metrics.overflowX ? 'right' : 'bottom';
-    els['overflow-text'].textContent = `Content leaves the frame (${axis})`;
+    const axis =
+      metrics.overflowX && metrics.overflowY
+        ? t('create.axis.both')
+        : metrics.overflowX
+          ? t('create.axis.right')
+          : t('create.axis.bottom');
+    els['overflow-text'].textContent = t('create.overflow', { axis });
     els['overflow-chip'].classList.remove('hidden');
   } else {
     els['overflow-chip'].classList.add('hidden');
   }
   if (errors && errors.length && !generating) {
-    els['stage-note-text'].textContent = errors[0].message || 'Script error';
+    els['stage-note-text'].textContent = errors[0].message || t('create.scriptError');
     els['stage-note'].classList.remove('hidden');
   }
 }
@@ -691,7 +830,7 @@ function afterCodeEdit() {
   const code = state.code;
   const has = Boolean(code.trim());
   const lines = code ? code.split('\n').length : 0;
-  els['code-count'].textContent = `${lines} line${lines === 1 ? '' : 's'}`;
+  els['code-count'].textContent = t('code.lines', { n: lines });
   els['code-size'].textContent =
     code.length > 900
       ? `${(code.length / 1024).toFixed(1)} KB`
@@ -725,7 +864,7 @@ function syncEverything() {
 
 function syncChrome() {
   const design = DESIGNS[state.aspect];
-  els['c-title'].textContent = state.title || DEFAULT_TITLE;
+  els['c-title'].textContent = displayTitle(state.title);
   els['fmt-aspect'].textContent = state.aspect;
   els['fmt-size'].textContent = `${design.width} × ${design.height}`;
   els['fmt-fps'].textContent = `${state.fps} fps`;
@@ -742,9 +881,9 @@ function syncChrome() {
     <span class="dot"></span>
     <span>${state.fps} fps</span>
     <span class="dot"></span>
-    <span>${frames} frames</span>
+    <span>${escapeHtml(t('common.frames', { n: frames }))}</span>
     <span class="dot"></span>
-    <span class="ok">${icon('check', 11)} frame-accurate</span>`;
+    <span class="ok">${icon('check', 11)} ${escapeHtml(t('common.frameAccurate'))}</span>`;
   const promptHint = els['ai-prompt-hint'];
   if (promptHint) updatePromptHint();
 }
@@ -763,6 +902,7 @@ function syncSettings() {
   setSeg('render-res', state.resolution);
   setSeg('render-fps', state.fps);
   setSeg('render-quality', state.quality);
+  setSeg('set-language', getLang());
   els['set-res-value'].textContent = RES_LABEL[state.resolution];
   els['set-fps-value'].textContent = String(state.fps);
   els['set-frames'].textContent = String(state.duration * state.fps);
@@ -772,12 +912,44 @@ function syncSettings() {
   els.guides.classList.toggle('on', state.guides);
   els['set-strict'].setAttribute('aria-checked', String(state.strict));
   els['ai-strict'].setAttribute('aria-checked', String(state.strict));
-  els['model-name'].textContent = state.model || 'Auto · fastest Flash';
+  els['model-name'].textContent = state.model || t('settings.autoFlash');
   els['set-ai-model'].textContent = state.model ? state.model.split('-').slice(0, 2).join('-') : 'GEMINI';
   els['render-res-value'].textContent = RES_LABEL[state.resolution];
-  els['render-quality-value'].textContent = QUALITY_LABEL[state.quality];
-  els['render-output'].textContent = `${design.width} × ${design.height} · ${state.duration * state.fps} frames`;
-  els['render-estimate'].textContent = `~${estimateSeconds()}s on this machine`;
+  els['render-quality-value'].textContent = qualityLabel(state.quality);
+  els['render-output'].textContent = `${design.width} × ${design.height} · ${t('common.frames', {
+    n: state.duration * state.fps
+  })}`;
+  els['render-estimate'].textContent = t('common.estimate', { n: estimateSeconds() });
+  syncKeyCard();
+}
+
+function isLocalHost() {
+  const host = location.hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+}
+
+function syncKeyCard() {
+  if (!els['key-status']) return;
+  const notice = keyNotice.until > Date.now() ? keyNotice : null;
+  els['key-status'].textContent = notice
+    ? notice.text
+    : overview.configured
+      ? t('settings.keyCurrent')
+      : t('settings.keyNone');
+  els['key-status'].classList.toggle(
+    'ok',
+    notice ? notice.kind === 'ok' : Boolean(overview.configured && overview.ok)
+  );
+  els['key-status'].classList.toggle(
+    'warn',
+    notice ? notice.kind === 'warn' : !overview.configured
+  );
+  const canEdit = !STATIC_DEMO && isLocalHost();
+  els['key-form'].classList.toggle('hidden', !canEdit);
+  els['key-input'].disabled = !canEdit;
+  els['key-save'].disabled = false;
+  els['key-static'].classList.toggle('hidden', !STATIC_DEMO);
+  els['key-loopback'].classList.toggle('hidden', STATIC_DEMO || canEdit);
 }
 
 function syncEmptyState() {
@@ -798,7 +970,10 @@ function syncPlayButtons() {
   const ended = preview && has && preview.t >= state.duration * 1000 - 30;
   const iconName = playing ? 'pause' : ended ? 'replay' : 'play';
   els['play-btn'].innerHTML = iconHtml(iconName, 15);
-  els['play-btn'].setAttribute('aria-label', playing ? 'Pause film' : ended ? 'Replay film' : 'Play film');
+  els['play-btn'].setAttribute(
+    'aria-label',
+    playing ? t('create.pause') : ended ? t('create.replay') : t('create.play')
+  );
   els['play-orb'].innerHTML = iconHtml(iconName, 20);
   els['stage-overlay'].classList.toggle('playing', Boolean(playing));
   if (playing) els['stage-overlay'].classList.add('hidden');
@@ -815,6 +990,7 @@ function estimateSeconds() {
 /* ---------------------------------------------------------------- create bindings */
 
 function bindChrome() {
+  els['btn-lang'].addEventListener('click', () => changeLanguage(getLang() === 'fa' ? 'en' : 'fa'));
   $$('#tabbar .tab').forEach((tab) => {
     tab.addEventListener('click', () => showView(tab.dataset.tab));
   });
@@ -918,10 +1094,10 @@ function openRename() {
 function saveRename() {
   const value = els['rename-input'].value.trim();
   state.title = value || DEFAULT_TITLE;
-  els['c-title'].textContent = state.title;
+  els['c-title'].textContent = displayTitle(state.title);
   saveSoon();
   closeSheet();
-  toast('Project renamed.');
+  toast(t('project.renamed'));
 }
 
 /* ---------------------------------------------------------------- code bindings */
@@ -934,7 +1110,7 @@ function bindCode() {
   els['btn-code-reload'].addEventListener('click', () => {
     previewDirty = false;
     refreshPreview({ autoplay: false });
-    toast('Preview reloaded.');
+    toast(t('toast.previewReloaded'));
   });
   els['btn-code-expand'].addEventListener('click', () => {
     els['editor-card'].classList.toggle('expanded');
@@ -946,14 +1122,14 @@ function bindCode() {
     const snippet = SNIPPETS.find((item) => item.label === button.dataset.snippet);
     if (!snippet) return;
     editor.insert(snippet.text);
-    toast(`${snippet.label} snippet inserted.`);
+    toast(t('code.snippetInserted', { label: t(snippet.key) }));
   });
 }
 
 async function copyCode() {
-  if (!state.code.trim()) return toast('Nothing to copy yet.');
+  if (!state.code.trim()) return toast(t('toast.nothingToCopy'));
   const ok = await copyText(state.code);
-  toast(ok ? 'Document copied.' : 'Could not access the clipboard.');
+  toast(ok ? t('toast.documentCopied') : t('toast.clipboardFail'));
 }
 
 /* ---------------------------------------------------------------- tabs */
@@ -1041,14 +1217,28 @@ function bindSheets() {
   els['ai-strict'].addEventListener('click', () => toggleStrict());
   els['set-strict'].addEventListener('click', () => toggleStrict());
   els['ai-test-btn'].addEventListener('click', () => runAiTest({ manual: true }));
-  els['ai-retest-key'].addEventListener('click', () => runAiTest({ manual: true }));
+  els['ai-open-key-settings'].addEventListener('click', () => {
+    closeSheet();
+    showView('settings');
+    setTimeout(() => {
+      els['key-card']?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (!els['key-input'].disabled) els['key-input'].focus();
+    }, 360);
+  });
+  els['key-save'].addEventListener('click', saveGeminiKey);
+  els['key-input'].addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveGeminiKey();
+    }
+  });
   els['ai-generate'].addEventListener('click', () => {
     if (generating) cancelGeneration();
     else runGeneration();
   });
   els['ai-surprise'].addEventListener('click', () => {
     if (generating) return;
-    const idea = IDEAS[Math.floor(Math.random() * IDEAS.length)];
+    const idea = ideaText(IDEAS[Math.floor(Math.random() * IDEAS.length)]);
     const options = ['editorial', 'brutalist', 'riso', 'blueprint', 'organic', 'cinema', 'constructivist', 'minimal', 'random'];
     state.direction = options[Math.floor(Math.random() * options.length)];
     saveSoon();
@@ -1102,23 +1292,23 @@ function bindSheets() {
   els['video-link'].addEventListener('click', async () => {
     if (!currentVideo) return;
     const ok = await copyText(`${location.origin}${currentVideo.url}`);
-    toast(ok ? 'Link copied.' : 'Could not copy the link.');
+    toast(ok ? t('library.linkCopied') : t('library.linkFail'));
   });
   els['video-code'].addEventListener('click', openVideoCode);
   els['video-delete'].addEventListener('click', () => {
     if (!currentVideo) return;
     const item = currentVideo;
     openConfirm(
-      'Delete this film?',
-      `“${escapeHtml(item.title)}” and its source will be removed from this machine. This cannot be undone.`,
+      t('library.deleteTitle'),
+      t('library.deleteBody', { title: escapeHtml(item.title) }),
       async () => {
         try {
           await fetch(`/api/library/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
           closeSheet();
           await loadLibrary();
-          toast('Film deleted.');
+          toast(t('library.filmDeleted'));
         } catch (e) {
-          toast('Could not delete that film.');
+          toast(t('library.deleteFail'));
         }
       }
     );
@@ -1141,12 +1331,12 @@ function bindSheets() {
     renderModels();
     syncSettings();
     closeSheet();
-    toast(state.model ? 'Model pinned.' : 'Using the fastest Flash model.');
+    toast(state.model ? t('ai.modelPinned') : t('ai.modelAuto'));
   });
   els['model-refresh'].addEventListener('click', () => loadModels(true));
   els['set-model'].addEventListener('click', openModelSheet);
   els['video-el'].addEventListener('error', () => {
-    if (els['video-el'].getAttribute('src')) toast('Could not play that file.');
+    if (els['video-el'].getAttribute('src')) toast(t('library.playFail'));
   });
 }
 
@@ -1164,9 +1354,9 @@ function setAiMode(mode) {
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   });
   const placeholders = {
-    generate: 'A typographic countdown to the last train home — numbers, rules, one moving line.',
-    edit: 'Push the type bigger, slow the final hold, keep the palette.',
-    extract: 'Keep only the motion scene. Remove every button, nav, footer and app chrome.'
+    generate: t('ai.prompt.generate'),
+    edit: t('ai.prompt.edit'),
+    extract: t('ai.prompt.extract')
   };
   els['ai-prompt'].placeholder = placeholders[mode];
   els['ai-ideas'].classList.toggle('hidden', mode !== 'generate');
@@ -1184,11 +1374,15 @@ function updatePromptHint() {
   const design = DESIGNS[state.aspect];
   const mode = state.mode;
   if (mode === 'generate') {
-    els['ai-prompt-hint'].textContent = `Stage ${design.width} × ${design.height} · ${state.fps} fps · ${state.duration}s`;
+    els['ai-prompt-hint'].textContent = t('ai.hint.generate', {
+      w: design.width,
+      h: design.height,
+      fps: state.fps
+    });
   } else if (mode === 'edit') {
-    els['ai-prompt-hint'].textContent = 'Rewrites the current document · key tested first';
+    els['ai-prompt-hint'].textContent = t('ai.hint.edit');
   } else {
-    els['ai-prompt-hint'].textContent = 'Finds one scene and removes app chrome';
+    els['ai-prompt-hint'].textContent = t('ai.hint.extract');
   }
 }
 
@@ -1197,7 +1391,7 @@ function toggleStrict() {
   saveSoon();
   els['ai-strict'].setAttribute('aria-checked', String(state.strict));
   els['set-strict'].setAttribute('aria-checked', String(state.strict));
-  toast(state.strict ? 'Strict art direction on.' : 'Strict art direction off — gradients allowed.');
+  toast(state.strict ? t('toast.strictOn') : t('toast.strictOff'));
 }
 
 /* ---------------------------------------------------------------- AI sheet */
@@ -1215,7 +1409,10 @@ function openAiSheet(mode = 'generate', prefill = '') {
 
 function renderIdeas() {
   els['ai-ideas'].innerHTML = IDEAS.slice(0, 5)
-    .map((idea) => `<button data-idea="${escapeHtml(idea)}">${escapeHtml(idea.slice(0, 42))}${idea.length > 42 ? '…' : ''}</button>`)
+    .map((idea) => {
+      const text = ideaText(idea);
+      return `<button data-idea="${escapeHtml(text)}">${escapeHtml(text.slice(0, 42))}${text.length > 42 ? '…' : ''}</button>`;
+    })
     .join('');
 }
 
@@ -1242,18 +1439,20 @@ function renderDirections() {
       (direction) => `
       <button class="dir-pill" data-direction="${direction.id}" aria-pressed="${direction.id === active}">
         <span class="dir-dots">${(direction.palette || []).map((c) => `<i style="background:${c}"></i>`).join('')}</span>
-        ${escapeHtml(direction.name)}
+        ${escapeHtml(directionLabel(direction))}
       </button>`
     )
     .join('');
   const current = directions.find((direction) => direction.id === active);
-  els['ai-direction-label'].textContent = current ? current.name : 'Editorial / Swiss';
+  els['ai-direction-label'].textContent = current
+    ? directionLabel(current)
+    : t('direction.editorial');
   els['dir-grid'].innerHTML = directions
     .filter((direction) => direction.id !== 'random')
     .map(
       (direction) => `
       <button class="dir-tile" data-direction="${direction.id}" aria-pressed="${direction.id === active}">
-        <span class="name">${escapeHtml(direction.name)}</span>
+        <span class="name">${escapeHtml(directionLabel(direction))}</span>
         <span class="dir-swatches">${(direction.palette || []).map((c) => `<i style="background:${c}"></i>`).join('')}</span>
         <span class="check">${iconHtml('check', 12)}</span>
       </button>`
@@ -1293,17 +1492,18 @@ async function refreshAiHealth(force = false) {
   }
   updateAiStatusUi();
   renderAbout();
+  syncSettings();
   renderDirections();
 }
 
 async function runAiTest({ manual = false } = {}) {
   if (STATIC_DEMO) {
-    toast('Static preview — test the key in the local studio.');
+    toast(t('ai.staticTest'));
     return { ok: false, configured: false, error: 'Static preview' };
   }
   const button = els['ai-test-btn'];
   button.disabled = true;
-  button.textContent = 'Testing…';
+  button.textContent = t('common.testing');
   overview.checking = true;
   updateAiStatusUi();
   let result = null;
@@ -1313,7 +1513,7 @@ async function runAiTest({ manual = false } = {}) {
     result = { ok: false, error: error.message, code: 'NETWORK', retryable: true };
   }
   button.disabled = false;
-  button.textContent = 'Test key';
+  button.textContent = t('common.testKey');
   if (result && result.ok) {
     overview = {
       configured: true,
@@ -1324,13 +1524,15 @@ async function runAiTest({ manual = false } = {}) {
       checking: false,
       modelCount: overview.modelCount
     };
-    if (manual) toast(`Connected in ${result.latencyMs}ms · ${result.model}`);
+    if (manual) {
+      toast(t('ai.connected', { ms: result.latencyMs, model: result.model }));
+    }
     els['ai-key-setup'].classList.add('hidden');
   } else {
     overview = {
       configured: Boolean(result?.configured),
       ok: false,
-      error: result?.error || 'Connection failed.',
+      error: result?.error || t('ai.status.unreachable'),
       code: result?.code || 'NETWORK',
       checking: false,
       defaultModel: overview.defaultModel,
@@ -1340,27 +1542,90 @@ async function runAiTest({ manual = false } = {}) {
   }
   updateAiStatusUi();
   renderAbout();
+  syncSettings();
   return result;
+}
+
+async function saveGeminiKey() {
+  if (STATIC_DEMO) {
+    toast(t('settings.keyStatic'));
+    return;
+  }
+  const value = els['key-input'].value.trim();
+  if (!value) {
+    els['key-input'].focus();
+    return;
+  }
+  els['key-save'].disabled = true;
+  els['key-status'].className = 'key-status';
+  els['key-status'].textContent = t('settings.keySaving');
+  let result;
+  try {
+    result = await setGeminiKey(value);
+  } catch (error) {
+    result = { ok: false, code: 'NETWORK', error: error.message };
+  }
+  els['key-save'].disabled = false;
+  if (!result || !result.ok) {
+    const code = result?.code;
+    let message = result?.error || t('settings.keyError');
+    if (code === 'LOOPBACK_ONLY') message = t('settings.keyLoopback');
+    else if (code === 'INVALID_KEY_FORMAT') message = t('settings.keyInvalid');
+    keyNotice = {
+      text: `${t('settings.keyTestFailed')} ${message}`,
+      kind: 'warn',
+      until: Date.now() + 5 * 60 * 1000
+    };
+    syncKeyCard();
+    toast(message, { duration: 7000 });
+    return;
+  }
+  els['key-input'].value = '';
+  keyNotice = {
+    text: t('settings.keySavedOk', {
+      model: result.model || 'Gemini',
+      ms: result.latencyMs || 0
+    }),
+    kind: 'ok',
+    until: Date.now() + 5 * 60 * 1000
+  };
+  syncKeyCard();
+  overview = {
+    configured: true,
+    ok: true,
+    latencyMs: result.latencyMs || 0,
+    defaultModel: result.model || overview.defaultModel,
+    error: '',
+    checking: false,
+    modelCount: overview.modelCount
+  };
+  els['ai-key-setup'].classList.add('hidden');
+  updateAiStatusUi();
+  renderAbout();
+  loadModels(true);
 }
 
 function updateAiStatusUi() {
   let kind = 'busy';
-  let text = 'Checking your key…';
+  let text = t('ai.status.checking');
   if (!overview.checking) {
     if (!overview.configured) {
       kind = 'warn';
-      text = 'No key yet — add GEMINI_API_KEY to .env';
+      text = t('ai.status.noKey');
     } else if (overview.ok) {
       kind = 'ok';
-      text = `Key live · ${overview.defaultModel || 'Gemini'} · ${overview.latencyMs || 0}ms`;
+      text = t('ai.status.live', {
+        model: overview.defaultModel || 'Gemini',
+        ms: overview.latencyMs || 0
+      });
     } else {
       kind = 'err';
-      text = overview.error || 'Gemini is unreachable.';
+      text = overview.error || t('ai.status.unreachable');
     }
   }
   if (STATIC_DEMO) {
     kind = 'warn';
-    text = 'Static preview · AI runs locally';
+    text = t('ai.status.static');
   }
   els['ai-status-dot'].className = `status-dot ${overview.checking ? 'busy' : kind}`;
   els['ai-status-text'].textContent = text;
@@ -1391,7 +1656,9 @@ async function loadModels(force = false) {
     renderModels();
     return;
   }
-  els['model-list'].innerHTML = '<div class="status-line"><span class="status-dot busy"></span><span>Asking Gemini for its fastest models…</span></div>';
+  els['model-list'].innerHTML = `<div class="status-line"><span class="status-dot busy"></span><span>${escapeHtml(
+    t('ai.askingModels')
+  )}</span></div>`;
   const result = await aiModels(force);
   if (result && result.ok) {
     models = result.models || [];
@@ -1402,7 +1669,7 @@ async function loadModels(force = false) {
   } else {
     modelsLoaded = false;
     models = [];
-    if (result?.error && !/no api key/i.test(result.error)) toast(result.error, { duration: 5000 });
+    if (result?.error && !/no api key/i.test(result.error)) toast(userMessage(result), { duration: 5000 });
   }
   renderModels();
   updateAiStatusUi();
@@ -1412,7 +1679,7 @@ async function loadModels(force = false) {
 function openModelSheet() {
   if (!overview.configured) {
     openAiSheet('generate');
-    toast('Add a key first — the model list comes from Gemini.');
+    toast(t('ai.addKeyFirst'));
     return;
   }
   renderModels();
@@ -1424,7 +1691,9 @@ function renderModels() {
   const rows = [];
   rows.push(`
     <button class="option-row" data-model="" aria-pressed="${!state.model}">
-      <div class="oinfo"><b>Auto · fastest Flash</b><span>Gemini picks the quickest Flash model, falling back gracefully.</span></div>
+      <div class="oinfo"><b>${escapeHtml(t('settings.autoFlash'))}</b><span>${escapeHtml(
+        t('settings.autoFlashDesc')
+      )}</span></div>
       <span class="check">${iconHtml('check', 15)}</span>
     </button>`);
   models.slice(0, 10).forEach((model) => {
@@ -1435,7 +1704,9 @@ function renderModels() {
       </button>`);
   });
   if (!models.length) {
-    rows.push('<div class="info-note" style="margin:8px 0 0">No model list yet. Test the key, then refresh.</div>');
+    rows.push(
+      `<div class="info-note" style="margin:8px 0 0">${escapeHtml(t('ai.noModels'))}</div>`
+    );
   }
   els['model-list'].innerHTML = rows.join('');
 }
@@ -1448,8 +1719,8 @@ function setGeneratingUi(on) {
   els['ai-generate'].classList.toggle('danger', on);
   els['ai-generate'].classList.toggle('primary', !on);
   els['ai-generate'].innerHTML = on
-    ? `${iconHtml('close', 15)} Stop writing`
-    : `${iconHtml('spark', 15)} Generate scene`;
+    ? `${iconHtml('close', 15)} ${escapeHtml(t('ai.stop'))}`
+    : `${iconHtml('spark', 15)} ${escapeHtml(t('ai.generate'))}`;
   els['ai-mode'].querySelectorAll('button').forEach((button) => {
     button.disabled = on;
   });
@@ -1461,7 +1732,7 @@ function setGeneratingUi(on) {
     genTimer = setInterval(() => {
       const seconds = Math.floor((Date.now() - genStartedAt) / 1000);
       els['ai-gen-time'].textContent = `${seconds}s`;
-      const label = PHASE_LABEL[genPhase] || 'Writing the scene';
+      const label = t(PHASE_KEY[genPhase] || 'phase.writing');
       els['gen-pill-text'].textContent = `${label} · ${seconds}s`;
     }, 280);
   } else {
@@ -1478,7 +1749,7 @@ function updateGenPill() {
 
 function setGenPhase(phase, extra = '') {
   genPhase = phase;
-  const label = PHASE_LABEL[phase] || PHASE_LABEL.writing;
+  const label = t(PHASE_KEY[phase] || 'phase.writing');
   els['ai-gen-phase'].textContent = `${label}…`;
   if (extra) els['ai-gen-meta'].textContent = extra;
   els['gen-pill-text'].textContent = `${label}…`;
@@ -1493,54 +1764,80 @@ function hideAiError() {
   els['ai-error'].classList.add('hidden');
 }
 
+function localizeWarning(message) {
+  const text = String(message || '');
+  let match = text.match(/^The model stopped early\. Retrying with (.+)…$/);
+  if (match) return t('ai.warn.modelRetry', { model: match[1] });
+  match = text.match(/^Connection interrupted\. Retry (\d+)\/3…$/);
+  if (match) return t('ai.warn.retry', { n: match[1] });
+  match = text.match(/^Cleanup connection interrupted\. Retry (\d+)\/3…$/);
+  if (match) return t('ai.warn.cleanupRetry', { n: match[1] });
+  match = text.match(/^Art direction still contains: (.+)\. You can ask AI to refine it\.$/);
+  if (match) return t('ai.warn.stillDirty', { list: match[1] });
+  match = text.match(/^Some app controls could not be removed: (.+)\.$/);
+  if (match) return t('ai.warn.cleanupResidual', { list: match[1] });
+  if (/^The refined draft was incomplete, so the original was kept\.$/.test(text)) {
+    return t('ai.warn.refineIncomplete');
+  }
+  if (/^The cleanup pass did not finish; the stripped scene was kept\.$/.test(text)) {
+    return t('ai.warn.cleanupIncomplete');
+  }
+  if (/^Connection dropped\. Rebuilding the scene automatically…$/.test(text)) {
+    return t('ai.warn.rebuild');
+  }
+  return text;
+}
+
 function userMessage(error) {
   const code = error?.code;
-  if (code === 'NO_KEY') return 'No Gemini key found. Add GEMINI_API_KEY to .env, restart the server, then test the key.';
-  if (code === 'INVALID_KEY') return 'Gemini rejected the key. Check that it is enabled for the Generative Language API.';
-  if (code === 'RATE_LIMIT') return 'Gemini is rate limiting this key. Wait a moment and try again.';
-  if (code === 'MODEL_NOT_FOUND') return 'That model is not available to this key. Pick Auto in Settings.';
-  if (code === 'NETWORK') return 'The connection dropped repeatedly. Check your network and try again — the studio will retest the key first.';
-  return error?.message || 'The studio could not finish that scene.';
+  if (code === 'NO_KEY') return t('ai.error.noKey');
+  if (code === 'INVALID_KEY') return t('ai.error.invalidKey');
+  if (code === 'RATE_LIMIT') return t('ai.error.rateLimit');
+  if (code === 'MODEL_NOT_FOUND') return t('ai.error.model');
+  if (code === 'NETWORK') return t('ai.error.network');
+  return error?.message || error?.error || t('ai.error.generic');
 }
 
 async function runGeneration() {
   if (generating) return;
   if (STATIC_DEMO) {
-    showAiError('Static preview — AI generation runs on the local studio. Run npm start and open localhost:4173.');
+    showAiError(t('ai.staticGenerate'));
     return;
   }
   const mode = state.mode;
   const prompt = els['ai-prompt'].value.trim();
   if (mode !== 'generate' && !state.code.trim()) {
-    showAiError('There is no document to refine. Write a first scene or load a preset.');
+    showAiError(t('ai.noDocument'));
     return;
   }
   if (mode === 'generate' && !prompt) {
-    showAiError('Describe the scene first — one sentence is enough.');
+    showAiError(t('ai.noPrompt'));
     els['ai-prompt'].focus();
     return;
   }
   if (!overview.configured) {
-    showAiError('No key configured. Add GEMINI_API_KEY to .env and restart the studio.');
+    showAiError(t('ai.noKeyConfigured'));
     els['ai-key-setup'].classList.remove('hidden');
     return;
   }
 
   hideAiError();
-  els['ai-gen-meta'].textContent = 'Testing the key with a tiny live request…';
+  els['ai-gen-meta'].textContent = t('ai.testingDetail');
   setGenPhase('testing');
   codeBeforeGeneration = state.code;
   streamBuffer = '';
   let started = 0;
   genController = new AbortController();
   setGeneratingUi(true);
-  if (activeSheet && activeSheet.id === 'sheet-ai') els['ai-gen-meta'].textContent = 'Testing the key with a tiny live request…';
+  if (activeSheet && activeSheet.id === 'sheet-ai') {
+    els['ai-gen-meta'].textContent = t('ai.testingDetail');
+  }
 
   streamFlush = setInterval(() => {
     if (!streamBuffer) return;
     editor.setValue(streamBuffer, { silent: true, scrollToEnd: true });
     const lines = streamBuffer.split('\n').length;
-    els['code-count'].textContent = `${lines} lines`;
+    els['code-count'].textContent = t('code.lines', { n: lines });
     els['code-size'].textContent = `${(streamBuffer.length / 1024).toFixed(1)} KB`;
     els['editor-empty'].classList.add('hidden');
   }, 95);
@@ -1566,41 +1863,46 @@ async function runGeneration() {
     const done = await generate(params, {
       onMeta: (meta) => {
         const bits = [];
-        if (meta.testLatency) bits.push(`key tested in ${meta.testLatency}ms`);
+        if (meta.testLatency) bits.push(t('ai.keyTested', { ms: meta.testLatency }));
         if (meta.model) bits.push(meta.model);
-        if (meta.direction) bits.push(meta.direction);
-        if (meta.cached) bits.push('cached');
-        els['ai-gen-meta'].textContent = bits.join(' · ') || 'Streaming…';
+        if (meta.direction) bits.push(directionLabel({ id: meta.direction }));
+        if (meta.cached) bits.push(t('ai.cached'));
+        els['ai-gen-meta'].textContent = bits.join(' · ') || t('ai.streaming');
         if (meta.model) overview.defaultModel = meta.model;
       },
       onPhase: (phase) => {
-        if (phase?.phase === 'writing') setGenPhase('writing', 'Streaming a single HTML document…');
-        else if (phase?.phase === 'refining') setGenPhase('refining', 'A gradient or glow slipped in — rebuilding it flat.');
-        else if (phase?.phase === 'ready') setGenPhase('ready', 'Art direction clean.');
-        else if (phase?.phase === 'testing') setGenPhase('testing');
-        else if (phase?.phase === 'reconnecting') setGenPhase('reconnecting', `Connection dropped — attempt ${phase.attempt || 2} of 3.`);
-        else if (phase?.phase) setGenPhase('writing');
+        if (phase?.phase === 'writing') setGenPhase('writing', t('ai.streaming'));
+        else if (phase?.phase === 'refining') setGenPhase('refining', t('ai.refining'));
+        else if (phase?.phase === 'ready') setGenPhase('ready', t('ai.ready'));
+        else if (phase?.phase === 'testing') setGenPhase('testing', t('ai.testingDetail'));
+        else if (phase?.phase === 'cleaning') {
+          setGenPhase('cleaning', phase.removed ? t('ai.cleanupPhase', { n: phase.removed }) : t('ai.cleaning'));
+        } else if (phase?.phase === 'measuring') setGenPhase('measuring', t('ai.measuring'));
+        else if (phase?.phase === 'reconnecting') {
+          setGenPhase('reconnecting', t('ai.reconnect', { n: phase.attempt || 2 }));
+        } else if (phase?.phase) setGenPhase('writing');
       },
       onDelta: (text) => {
         if (!text) return;
         if (!started) {
           started = Date.now();
-          setGenPhase('writing', 'Streaming a single HTML document…');
+          setGenPhase('writing', t('ai.streaming'));
         }
         streamBuffer += text;
       },
       onReset: () => {
         streamBuffer = '';
         editor.setValue('', { silent: true });
-        setGenPhase('writing', 'Restarting the document cleanly…');
+        setGenPhase('writing', t('ai.restarting'));
       },
       onWarning: (message) => {
-        toast(message, { duration: 5000 });
-        els['ai-gen-meta'].textContent = message;
+        const localized = localizeWarning(message);
+        toast(localized, { duration: 5000 });
+        els['ai-gen-meta'].textContent = localized;
       },
       onViolations: (info) => {
         const list = Array.isArray(info?.violations) ? info.violations : [];
-        if (list.length) els['ai-gen-meta'].textContent = `Art direction check: ${list.join(', ')}`;
+        if (list.length) els['ai-gen-meta'].textContent = t('ai.artCheck', { list: list.join(', ') });
       }
     });
 
@@ -1609,6 +1911,15 @@ async function runGeneration() {
     if (streamBuffer) editor.setValue(streamBuffer, { silent: true });
     const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     setGeneratingUi(false);
+
+    const nextDuration = clamp(Number(done.duration) || state.duration, 2, 30);
+    const durationChanged = Math.abs(nextDuration - state.duration) >= 0.05;
+    if (durationChanged) {
+      state.duration = nextDuration;
+      if (preview) preview.setDuration(state.duration);
+      syncChrome();
+      syncSettings();
+    }
     setCode(done.code, { silentEditor: false, playAfter: true });
     if (done.direction) {
       state.direction = done.direction;
@@ -1622,16 +1933,32 @@ async function runGeneration() {
         syncChrome();
       }
     }
-    setGenPhase('ready', `Scene ready in ${seconds}s${done.cached ? ' · from cache' : ''}`);
+    setGenPhase(
+      'ready',
+      t('ai.sceneReady', {
+        seconds,
+        extra: done.cached ? t('ai.fromCache') : ''
+      })
+    );
     if (overview) {
       overview.ok = true;
       overview.checking = false;
     }
     updateAiStatusUi();
     if (Array.isArray(done.violations) && done.violations.length) {
-      toast(`Kept it flat, but flagged: ${done.violations.join(', ')}`, { duration: 6000 });
+      toast(t('ai.flagged', { list: done.violations.join(', ') }), { duration: 6000 });
     } else {
-      toast(`Scene written in ${seconds}s.`);
+      toast(t('ai.sceneWrittenDuration', { seconds, duration: state.duration }));
+    }
+    const removed = Number(done.cleanup?.removed) || 0;
+    if (removed > 0) {
+      setTimeout(() => toast(t('ai.cleanup', { count: removed })), 900);
+    }
+    if (done.durationAdjusted) {
+      setTimeout(
+        () => toast(t('ai.durationAdjusted', { duration: state.duration }), { duration: 6000 }),
+        1700
+      );
     }
     setTimeout(() => {
       if (activeSheet && activeSheet.id === 'sheet-ai' && !generating) closeSheet();
@@ -1645,16 +1972,16 @@ async function runGeneration() {
     if (cancelled) {
       if (partial.length > 300 && mode === 'generate') {
         setCode(partial, { playAfter: false });
-        toast('Writing stopped. Partial scene kept.');
+        toast(t('ai.writingStoppedPartial'));
       } else {
         setCode(codeBeforeGeneration, { playAfter: false });
-        toast('Writing stopped.');
+        toast(t('ai.writingStopped'));
       }
-      setGenPhase('ready', 'Stopped.');
+      setGenPhase('ready', t('toast.stopped'));
     } else {
       if (mode === 'generate' && partial.length > 400) {
         setCode(partial, { playAfter: false });
-        toast('Connection failed. The partial scene was kept.', { duration: 6000 });
+        toast(t('ai.connectionPartial'), { duration: 6000 });
       } else {
         setCode(codeBeforeGeneration, { playAfter: false });
       }
@@ -1678,21 +2005,28 @@ function cancelGeneration() {
 
 function openRenderSheet() {
   if (STATIC_DEMO) {
-    toast('Static preview — MP4 export runs on the local studio.');
+    toast(t('toast.staticExport'));
     return;
   }
   if (!state.code.trim()) {
-    toast('Write or load a scene first.');
+    toast(t('toast.writeFirst'));
     return;
   }
   syncSettings();
   setRenderStage('form');
   hideRenderError();
-  els['render-name'].textContent = state.title || DEFAULT_TITLE;
+  els['render-name'].textContent = displayTitle(state.title);
   const design = DESIGNS[state.aspect];
-  els['render-summary-meta'].textContent = `${design.width} × ${design.height} · ${state.fps} fps · ${state.duration}s`;
-  els['render-output'].textContent = `${design.width} × ${design.height} · ${state.duration * state.fps} frames`;
-  els['render-estimate'].textContent = `~${estimateSeconds()}s on this machine`;
+  els['render-summary-meta'].textContent = t('common.stageMeta', {
+    w: design.width,
+    h: design.height,
+    fps: state.fps,
+    d: state.duration
+  });
+  els['render-output'].textContent = `${design.width} × ${design.height} · ${t('common.frames', {
+    n: state.duration * state.fps
+  })}`;
+  els['render-estimate'].textContent = t('common.estimate', { n: estimateSeconds() });
   openSheet('sheet-render');
 }
 
@@ -1719,7 +2053,7 @@ function showRenderError(message) {
 
 async function startRender() {
   if (STATIC_DEMO) {
-    toast('Static preview — MP4 export runs on the local studio.');
+    toast(t('toast.staticExport'));
     return;
   }
   if (rendering || !state.code.trim()) return;
@@ -1729,12 +2063,16 @@ async function startRender() {
   renderController = new AbortController();
   rendering = true;
   setRenderStage('progress');
-  els['progress-name'].textContent = state.title || DEFAULT_TITLE;
-  els['progress-meta'].textContent = 'Launching Chrome…';
+  let jobDuration = state.duration;
+  els['progress-name'].textContent = displayTitle(state.title);
+  els['progress-meta'].textContent = t('render.warmup');
   els['progress-num'].innerHTML = '0<small>%</small>';
-  els['progress-detail'].innerHTML = `frame 0 / ${state.duration * state.fps}<br>eta —`;
+  els['progress-detail'].innerHTML = `${t('common.progressFrame', {
+    n: 0,
+    total: state.duration * state.fps
+  })}<br>${t('common.eta', { eta: '—' })}`;
   els['progress-bar'].style.width = '0%';
-  els['progress-caption'].textContent = 'Rendering frame by frame';
+  els['progress-caption'].textContent = t('render.rendering');
   els['progress-fps'].textContent = '— fps';
 
   const params = {
@@ -1752,33 +2090,43 @@ async function startRender() {
       params,
       {
         onJob: (job) => {
-          els['progress-meta'].textContent = `${job.width} × ${job.height} · ${job.fps} fps · ${QUALITY_LABEL[state.quality]}`;
-          els['progress-detail'].innerHTML = `frame 0 / ${state.duration * job.fps}<br>eta —`;
+          jobDuration = Number(job.duration) || jobDuration;
+          els['progress-meta'].textContent = `${job.width} × ${job.height} · ${job.fps} fps · ${qualityLabel(
+            state.quality
+          )}`;
+          els['progress-detail'].innerHTML = `${t('common.progressFrame', {
+            n: 0,
+            total: jobDuration * job.fps
+          })}<br>${t('common.eta', { eta: '—' })}`;
         },
         onQueued: (info) => {
-          els['progress-caption'].textContent = `Waiting for a free render slot · position ${info.position}`;
+          els['progress-caption'].textContent = t('render.waiting', { n: info.position });
         },
         onProgress: (progress) => {
           if (token !== renderToken) return;
+          if (progress.duration) jobDuration = progress.duration;
           if (progress.phase === 'loading') {
-            els['progress-meta'].textContent = 'Settling fonts and the stage…';
-            els['progress-caption'].textContent = 'Preparing the virtual clock';
+            els['progress-meta'].textContent = t('render.settling');
+            els['progress-caption'].textContent = t('render.clock');
             return;
           }
           if (progress.phase === 'poster') {
             els['progress-num'].innerHTML = '100<small>%</small>';
             els['progress-bar'].style.width = '100%';
-            els['progress-caption'].textContent = 'Finishing the container';
-            els['progress-fps'].textContent = 'done';
+            els['progress-caption'].textContent = t('render.finishing');
+            els['progress-fps'].textContent = t('render.done');
             return;
           }
           const pct = clamp((progress.frame / progress.total) * 100, 0, 100);
           els['progress-num'].innerHTML = `${Math.floor(pct)}<small>%</small>`;
           els['progress-bar'].style.width = `${pct}%`;
-          els['progress-detail'].innerHTML = `frame ${progress.frame} / ${progress.total}<br>eta ${formatEta(progress.eta)}`;
-          els['progress-caption'].textContent = 'Rendering frame by frame';
+          els['progress-detail'].innerHTML = `${t('common.progressFrame', {
+            n: progress.frame,
+            total: progress.total
+          })}<br>${t('common.eta', { eta: formatEta(progress.eta) })}`;
+          els['progress-caption'].textContent = t('render.rendering');
           els['progress-fps'].textContent = `${(progress.renderFps || 0).toFixed(1)} fps`;
-          els['progress-meta'].textContent = `Chrome capture · ffmpeg H.264 · ${state.resolution}p`;
+          els['progress-meta'].textContent = t('render.chromeCapture', { res: state.resolution });
         },
         onDone: () => {}
       },
@@ -1795,34 +2143,44 @@ async function startRender() {
     rendering = false;
     renderController = null;
     setRenderStage('form');
-    showRenderError(error.cancelled ? 'Render cancelled — nothing was written.' : error.message || 'Render failed.');
-    if (error.cancelled) toast('Render cancelled.');
+    showRenderError(
+      error.cancelled ? t('render.cancelledDetail') : error.message || t('render.failed')
+    );
+    if (error.cancelled) toast(t('render.cancelled'));
   }
 }
 
 function formatEta(ms) {
   if (!ms || ms < 0) return '—';
-  if (ms < 1000) return '<1s';
-  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+  const fa = getLang() === 'fa';
+  if (ms < 1000) return fa ? 'کمتر از ۱ ثانیه' : '<1s';
+  if (ms < 60000) return fa ? `${Math.round(ms / 1000)} ثانیه` : `${Math.round(ms / 1000)}s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.round((ms % 60000) / 1000);
+  return fa ? `${minutes} دقیقه ${seconds} ثانیه` : `${minutes}m ${seconds}s`;
 }
 
 function showRenderDone(done) {
   currentVideo = done;
   setRenderStage('done');
-  els['done-sub'].textContent = `${done.width} × ${done.height} · ${done.fps} fps · ${Number(done.duration).toFixed(1)}s`;
+  els['done-sub'].textContent = `${done.width} × ${done.height} · ${done.fps} fps · ${Number(
+    done.duration
+  ).toFixed(1)}s`;
   els['done-poster'].innerHTML = done.posterUrl
-    ? `<img src="${done.posterUrl}" alt="Poster frame of ${escapeHtml(done.title)}">`
+    ? `<img src="${done.posterUrl}" alt="${escapeHtml(t('library.posterAlt', { title: done.title }))}">`
     : '';
-  els['done-meta'].textContent = `${formatBytes(done.bytes)} · ${QUALITY_LABEL[done.quality] || done.quality} · ${(done.elapsedMs / 1000).toFixed(1)}s`;
-  const warnings = Array.isArray(done.warnings) ? done.warnings : [];
+  els['done-meta'].textContent = `${formatBytes(done.bytes)} · ${qualityLabel(done.quality)} · ${(
+    done.elapsedMs / 1000
+  ).toFixed(1)}s`;
+  const warnings = Array.isArray(done.warnings) ? [...done.warnings] : [];
+  if (done.durationChanged) warnings.unshift(t('render.durationAdjusted', { d: done.duration.toFixed(1) }));
   els['done-warnings'].classList.toggle('hidden', !warnings.length);
   els['done-warnings'].textContent = warnings.join(' · ');
   if (activeSheet && activeSheet.id === 'sheet-render') {
-    toast('MP4 ready.');
+    toast(t('render.ready'));
   } else {
-    toast('MP4 ready.', {
-      actionLabel: 'Watch',
+    toast(t('render.ready'), {
+      actionLabel: t('common.watch'),
       action: () => openVideo(done),
       duration: 8000
     });
@@ -1832,7 +2190,7 @@ function showRenderDone(done) {
 function cancelRender() {
   if (!renderController) return;
   renderController.abort();
-  els['progress-caption'].textContent = 'Stopping Chrome…';
+  els['progress-caption'].textContent = t('render.stopping');
 }
 
 /* ---------------------------------------------------------------- library */
@@ -1855,21 +2213,24 @@ async function loadLibrary() {
 
 function renderLibrary() {
   if (!els['lib-body']) return;
-  els['lib-count'].textContent = `${library.length} film${library.length === 1 ? '' : 's'}`;
+  els['lib-count'].textContent =
+    library.length === 1 ? t('library.countOne') : t('library.count', { n: library.length });
   if (!library.length) {
     els['lib-body'].innerHTML = STATIC_DEMO
       ? `
       <div class="library-empty">
         <div class="big-glyph">${iconHtml('film', 26)}</div>
-        <h3>Static preview</h3>
-        <p>Rendered films live on the local studio. Run npm start and open localhost:4173 to export and keep them here.</p>
+        <h3>${escapeHtml(t('library.staticTitle'))}</h3>
+        <p>${escapeHtml(t('library.staticBody'))}</p>
       </div>`
       : `
       <div class="library-empty">
         <div class="big-glyph">${iconHtml('film', 26)}</div>
-        <h3>No films yet</h3>
-        <p>Exports land here with their source and poster. Render your first scene to start the shelf.</p>
-        <button class="btn primary small" id="lib-empty-create">${iconHtml('spark', 14)} Write a first scene</button>
+        <h3>${escapeHtml(t('library.emptyTitle'))}</h3>
+        <p>${escapeHtml(t('library.emptyBody'))}</p>
+        <button class="btn primary small" id="lib-empty-create">${iconHtml('spark', 14)} ${escapeHtml(
+          t('library.firstScene')
+        )}</button>
       </div>`;
     const button = document.getElementById('lib-empty-create');
     if (button) button.addEventListener('click', () => openAiSheet('generate'));
@@ -1911,7 +2272,7 @@ function openVideo(item) {
     <span>${item.fps} fps</span>
     <span>${Number(item.duration).toFixed(1)}s</span>
     <span>${formatBytes(item.bytes)}</span>
-    <span>${QUALITY_LABEL[item.quality] || item.quality}</span>`;
+    <span>${qualityLabel(item.quality)}</span>`;
   openSheet('sheet-video');
 }
 
@@ -1944,9 +2305,9 @@ async function openVideoCode() {
     syncChrome();
     syncSettings();
     showView('code');
-    toast('Source opened.');
+    toast(t('library.sourceOpened'));
   } catch (error) {
-    toast('Could not open that source.');
+    toast(t('library.sourceFail'));
   }
 }
 
@@ -1964,7 +2325,7 @@ function renderPresets() {
       ${presetArtHtml(preset)}
       <div class="preset-meta">
         <div class="preset-name">${escapeHtml(preset.name)}</div>
-        <div class="preset-sub">${escapeHtml(preset.sub)}</div>
+        <div class="preset-sub">${escapeHtml(presetSub(preset))}</div>
       </div>
     </button>`
   ).join('');
@@ -1988,15 +2349,20 @@ async function selectPreset(id) {
     syncSettings();
     applyDesign();
     showView('create');
-    toast(`“${preset.name}” loaded.`);
+    toast(t('presets.loaded', { name: preset.name }));
   } catch (error) {
-    toast('Could not load that preset.');
+    toast(t('presets.loadFail'));
   }
 }
 
 /* ---------------------------------------------------------------- settings bindings */
 
 function bindSettings() {
+  els['set-language'].addEventListener('click', (event) => {
+    const button = event.target.closest('[data-value]');
+    if (!button) return;
+    changeLanguage(button.dataset.value);
+  });
   els['set-aspect'].addEventListener('click', (event) => {
     const button = event.target.closest('[data-value]');
     if (button) {
@@ -2050,16 +2416,16 @@ function bindSettings() {
     if (installEvent) {
       installEvent.prompt();
       const choice = await installEvent.userChoice;
-      if (choice?.outcome === 'accepted') toast('Installing Motion Studio…');
+      if (choice?.outcome === 'accepted') toast(t('settings.installing'));
       installEvent = null;
     } else {
-      toast('Use the browser menu and choose “Add to Home Screen”.', { duration: 6000 });
+      toast(t('settings.installInstructions'), { duration: 6000 });
     }
   });
   els['btn-reset'].addEventListener('click', () => {
     openConfirm(
-      'Reset this workspace?',
-      'The current scene, name and stage settings on this device are cleared. Your rendered library stays on the server.',
+      t('settings.resetTitle'),
+      t('settings.resetBody'),
       async () => {
         localStorage.removeItem(STORE_KEY);
         state.title = DEFAULT_TITLE;
@@ -2079,7 +2445,7 @@ function bindSettings() {
         syncEverything();
         refreshDirectionsSafe();
         await refreshPreview();
-        toast('Workspace reset.');
+        toast(t('settings.resetDone'));
       }
     );
   });
@@ -2114,12 +2480,22 @@ async function refreshServerHealth() {
 function renderAbout() {
   if (!els['about-lines']) return;
   const rows = [
-    ['Chrome', health?.chrome || 'not detected'],
-    ['ffmpeg', health?.ffmpeg || 'not detected'],
-    ['Node', health?.node || '—'],
-    ['Storage', 'this machine · local files'],
-    ['Gemini key', overview.configured ? 'server side · .env' : 'not configured'],
-    ['AI state', overview.checking ? 'checking…' : overview.ok ? 'connected' : overview.error || 'offline']
+    [t('settings.about.chrome'), health?.chrome || t('settings.about.notDetected')],
+    [t('settings.about.ffmpeg'), health?.ffmpeg || t('settings.about.notDetected')],
+    [t('settings.about.node'), health?.node || '—'],
+    [t('settings.about.storage'), t('settings.about.thisMachine')],
+    [
+      t('settings.about.geminiKey'),
+      overview.configured ? t('settings.about.serverEnv') : t('settings.about.notConfigured')
+    ],
+    [
+      t('settings.about.aiState'),
+      overview.checking
+        ? t('settings.about.checking')
+        : overview.ok
+          ? t('settings.about.connected')
+          : overview.error || t('settings.about.offline')
+    ]
   ];
   els['about-lines'].innerHTML = rows
     .map(
@@ -2139,7 +2515,7 @@ function toast(message, { action, actionLabel, duration = 4200 } = {}) {
   node.innerHTML = `<span class="msg">${escapeHtml(message)}</span>`;
   if (action) {
     const button = document.createElement('button');
-    button.textContent = actionLabel || 'Open';
+    button.textContent = actionLabel || t('common.open');
     button.addEventListener('click', () => {
       action();
       node.remove();
@@ -2149,7 +2525,7 @@ function toast(message, { action, actionLabel, duration = 4200 } = {}) {
   }
   const close = document.createElement('button');
   close.className = 'x';
-  close.setAttribute('aria-label', 'Dismiss');
+  close.setAttribute('aria-label', t('common.dismiss'));
   close.innerHTML = iconHtml('close', 13);
   close.addEventListener('click', () => {
     node.remove();
