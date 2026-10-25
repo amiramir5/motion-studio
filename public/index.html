@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f1efe9">
+  <meta name="description" content="Motion Studio turns typographic HTML into frame-accurate motion films.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Motion Studio</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="boot" aria-hidden="true">
+    <div class="boot-mark">
+      <svg width="38" height="38" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M5 5.2h6.4v4.1H5z"/><path d="M12.7 5.2H20v4.1h-7.3z"/><path d="M5 10.6h9.1v4.1H5z"/><path d="M15.4 10.6H20v4.1h-4.6z"/><path d="M5 16h4.6v4.1H5z"/><path d="M10.9 16H20v4.1h-9.1z"/>
+      </svg>
+    </div>
+    <div class="boot-word">MOTION / STUDIO</div>
+    <div class="boot-line"></div>
+  </div>
+
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark"><span data-icon="logo" data-size="17"></span></div>
+        <div class="brand-word">MOTION<span class="slash">/</span>STUDIO</div>
+      </div>
+      <div class="top-actions">
+        <button class="icon-btn ghost" id="btn-top-presets" aria-label="Presets" title="Presets">
+          <span data-icon="grid" data-size="17"></span>
+        </button>
+        <button class="icon-btn" id="btn-top-ai" aria-label="Write with AI" title="Write with AI">
+          <span data-icon="spark" data-size="17"></span>
+        </button>
+      </div>
+    </header>
+
+    <main class="main" id="main">
+      <div id="view-root"></div>
+    </main>
+
+    <nav class="tabbar" id="tabbar" aria-label="Workspace">
+      <button class="tab active" data-tab="create">
+        <span data-icon="film" data-size="20"></span>
+        <span>Create</span>
+      </button>
+      <button class="tab" data-tab="code">
+        <span data-icon="code" data-size="20"></span>
+        <span>Code</span>
+      </button>
+      <button class="tab" data-tab="library">
+        <span data-icon="layers" data-size="20"></span>
+        <span>Library</span>
+      </button>
+      <button class="tab" data-tab="settings">
+        <span data-icon="settings" data-size="20"></span>
+        <span>Settings</span>
+      </button>
+    </nav>
+  </div>
+
+  <div class="gen-pill" id="gen-pill" role="status">
+    <span class="spinner"></span>
+    <span class="grow" id="gen-pill-text">Writing the scene…</span>
+    <button id="gen-pill-cancel">Stop</button>
+  </div>
+  <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- AI sheet -->
+  <section class="sheet" id="sheet-ai" role="dialog" aria-modal="true" aria-labelledby="ai-title" aria-hidden="true">
+    <div class="sheet-grab"></div>
+    <div class="sheet-head">
+      <div class="sheet-title-wrap">
+        <span class="sheet-eyebrow">Intelligence</span>
+        <h2 class="sheet-title" id="ai-title">Direct the <span class="serif">film</span></h2>
+      </div>
+      <button class="sheet-close" data-close aria-label="Close"><span data-icon="close" data-size="17"></span></button>
+    </div>
+    <div class="sheet-body">
+      <div class="ai-status">
+        <span class="status-dot" id="ai-status-dot"></span>
+        <span class="grow" id="ai-status-text">Checking your key…</span>
+        <button id="ai-test-btn">Test key</button>
+      </div>
+
+      <div class="mode-switch three" id="ai-mode">
+        <button data-mode="generate" aria-pressed="true">Write new</button>
+        <button data-mode="edit" aria-pressed="false">Refine</button>
+        <button data-mode="extract" aria-pressed="false">Extract</button>
+      </div>
+
+      <div class="prompt-wrap">
+        <textarea class="prompt" id="ai-prompt" maxlength="1200" placeholder="A typographic countdown to the last train home — numbers, rules, one moving line."></textarea>
+        <div class="prompt-foot">
+          <span id="ai-prompt-hint">Stage 1080 × 1920 · 60 fps · 10s</span>
+          <span id="ai-prompt-count">0 / 1200</span>
+        </div>
+      </div>
+
+      <div class="idea-chips" id="ai-ideas"></div>
+
+      <div class="sheet-section">
+        <div class="sheet-label">
+          <span>Art direction</span>
+          <span class="value" id="ai-direction-label">Editorial / Swiss</span>
+        </div>
+        <div class="dir-scroll" id="ai-directions"></div>
+      </div>
+
+      <div class="toggle-line">
+        <div class="txt">
+          <b>Strict art direction</b>
+          Refuses gradients, neon, glass and generic AI palettes.
+        </div>
+        <button class="switch" id="ai-strict" aria-checked="true" role="switch" aria-label="Strict art direction"></button>
+      </div>
+
+      <div class="generating-panel" id="ai-gen-panel">
+        <div class="gen-line">
+          <span class="spinner"></span>
+          <span class="grow" id="ai-gen-phase">Writing the scene…</span>
+          <span class="mono" id="ai-gen-time" style="font-family:var(--font-mono);font-size:9px;color:var(--muted)">0s</span>
+        </div>
+        <div class="gen-meta" id="ai-gen-meta">Connecting…</div>
+        <div class="gen-bar"><i></i></div>
+      </div>
+
+      <div class="ai-error hidden" id="ai-error" role="alert">
+        <span data-icon="warning" data-size="15"></span>
+        <div id="ai-error-text">Something went wrong.</div>
+      </div>
+
+      <div class="key-setup hidden" id="ai-key-setup">
+        <h4>Connect Gemini</h4>
+        <p>Your key stays on this machine, inside the server. It is never sent to the browser or saved in the project.</p>
+        <ol>
+          <li>Open <code>.env</code> in the project folder.</li>
+          <li>Set <code>GEMINI_API_KEY=your_key</code>.</li>
+          <li>Restart with <code>npm start</code>, then press “Test key”.</li>
+        </ol>
+        <button class="btn secondary small" id="ai-retest-key"><span data-icon="refresh" data-size="14"></span> Test again</button>
+      </div>
+    </div>
+    <div class="sheet-footer">
+      <button class="btn ghost small" id="ai-surprise" title="Surprise me"><span data-icon="bolt" data-size="14"></span> Surprise me</button>
+      <span class="grow"></span>
+      <button class="btn primary" id="ai-generate"><span data-icon="spark" data-size="15"></span> Generate scene</button>
+    </div>
+  </section>
+
+  <!-- Presets sheet -->
+  <section class="sheet" id="sheet-presets" role="dialog" aria-modal="true" aria-labelledby="presets-title" aria-hidden="true">
+    <div class="sheet-grab"></div>
+    <div class="sheet-head">
+      <div class="sheet-title-wrap">
+        <span class="sheet-eyebrow">Field notes</span>
+        <h2 class="sheet-title" id="presets-title">Eight <span class="serif">originals</span></h2>
+      </div>
+      <button class="sheet-close" data-close aria-label="Close"><span data-icon="close" data-size="17"></span></button>
+    </div>
+    <div class="sheet-body">
+      <div class="preset-grid" id="preset-grid"></div>
+      <div class="info-note" style="margin:14px 0 0">
+        <span data-icon="info" data-size="14"></span>
+        <span>Built for this engine: flat ink, real typography, deterministic motion. Tap one to load it into the editor.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Render sheet -->
+  <section class="sheet" id="sheet-render" role="dialog" aria-modal="true" aria-labelledby="render-title" aria-hidden="true">
+    <div class="sheet-grab"></div>
+    <div class="sheet-head">
+      <div class="sheet-title-wrap">
+        <span class="sheet-eyebrow">Export</span>
+        <h2 class="sheet-title" id="render-title">Render <span class="serif">MP4</span></h2>
+      </div>
+      <button class="sheet-close" data-close aria-label="Close"><span data-icon="close" data-size="17"></span></button>
+    </div>
+    <div class="sheet-body">
+      <div id="render-form">
+        <div class="render-summary">
+          <div class="thumb" data-icon="film" data-size="17"></div>
+          <div class="info">
+            <b id="render-name">Untitled Motion</b>
+            <span id="render-summary-meta">1080 × 1920 · 60 fps · 10s</span>
+          </div>
+        </div>
+
+        <div class="sheet-section">
+          <div class="sheet-label"><span>Resolution</span><span class="value" id="render-res-value">1080p</span></div>
+          <div class="seg wide" id="render-res">
+            <button data-value="720">720p</button>
+            <button data-value="1080" aria-pressed="true">1080p</button>
+            <button data-value="1440">1440p</button>
+          </div>
+        </div>
+
+        <div class="sheet-section">
+          <div class="sheet-label"><span>Frame rate</span><span class="value">CFR</span></div>
+          <div class="seg wide" id="render-fps">
+            <button data-value="30">30 fps</button>
+            <button data-value="60" aria-pressed="true">60 fps</button>
+          </div>
+        </div>
+
+        <div class="sheet-section">
+          <div class="sheet-label"><span>Quality</span><span class="value" id="render-quality-value">High</span></div>
+          <div class="seg wide" id="render-quality">
+            <button data-value="draft">Draft</button>
+            <button data-value="high" aria-pressed="true">High</button>
+            <button data-value="max">Max</button>
+          </div>
+        </div>
+
+        <div class="sheet-section">
+          <div class="sheet-label"><span>Output</span><span class="value" id="render-output">1080 × 1920 · 600 frames</span></div>
+          <div class="progress-caption"><span id="render-estimate">~35s on this machine</span><span>H.264 · yuv420p · bt709</span></div>
+        </div>
+
+        <div class="render-note">
+          <span data-icon="info" data-size="14"></span>
+          <span>Every frame is a real Chrome capture on a virtual clock, then encoded by ffmpeg. The film matches the preview exactly.</span>
+        </div>
+      </div>
+
+      <div id="render-progress" class="hidden">
+        <div class="render-summary">
+          <div class="thumb" data-icon="film" data-size="17"></div>
+          <div class="info">
+            <b id="progress-name">Untitled Motion</b>
+            <span id="progress-meta">Warming up Chrome…</span>
+          </div>
+        </div>
+        <div class="progress-big">
+          <div class="progress-num" id="progress-num">0<small>%</small></div>
+          <div class="progress-meta" id="progress-detail">frame 0 / 0<br>eta —</div>
+        </div>
+        <div class="progress-bar"><i id="progress-bar"></i></div>
+        <div class="progress-caption">
+          <span id="progress-caption">Rendering frame by frame</span>
+          <span id="progress-fps">— fps</span>
+        </div>
+      </div>
+
+      <div id="render-done" class="render-done hidden">
+        <div class="done-mark" data-icon="check" data-size="22"></div>
+        <h3>Your film is ready</h3>
+        <p id="done-sub">Frame accurate. Sound off.</p>
+        <div class="done-poster" id="done-poster"></div>
+        <div class="done-actions">
+          <button class="btn primary" id="done-watch"><span data-icon="play" data-size="14"></span> Watch</button>
+          <button class="btn secondary" id="done-download"><span data-icon="download" data-size="14"></span> Download</button>
+        </div>
+        <div class="done-meta" id="done-meta"></div>
+        <div class="warn-list hidden" id="done-warnings"></div>
+      </div>
+
+      <div class="ai-error hidden" id="render-error">
+        <span data-icon="warning" data-size="15"></span>
+        <div id="render-error-text">Render failed.</div>
+      </div>
+    </div>
+    <div class="sheet-footer">
+      <button class="btn secondary hidden" id="render-cancel">Cancel render</button>
+      <span class="grow"></span>
+      <button class="btn primary" id="render-start"><span data-icon="export" data-size="15"></span> Start render</button>
+      <button class="btn secondary hidden" id="render-again"><span data-icon="replay" data-size="14"></span> Render again</button>
+    </div>
+  </section>
+
+  <!-- Video sheet -->
+  <section class="sheet" id="sheet-video" role="dialog" aria-modal="true" aria-labelledby="video-title" aria-hidden="true">
+    <div class="sheet-grab"></div>
+    <div class="sheet-head">
+      <div class="sheet-title-wrap">
+        <span class="sheet-eyebrow">Library</span>
+        <h2 class="sheet-title" id="video-title">Film</h2>
+      </div>
+      <button class="sheet-close" data-close aria-label="Close"><span data-icon="close" data-size="17"></span></button>
+    </div>
+    <div class="sheet-body">
+      <div class="video-player">
+        <video id="video-el" controls playsinline preload="metadata"></video>
+      </div>
+      <div class="video-actions">
+        <button class="btn secondary" id="video-download"><span data-icon="download" data-size="16"></span> Download</button>
+        <button class="btn secondary" id="video-link"><span data-icon="link" data-size="16"></span> Copy link</button>
+        <button class="btn secondary" id="video-code"><span data-icon="code" data-size="16"></span> Open code</button>
+        <button class="btn secondary" id="video-delete"><span data-icon="trash" data-size="16"></span> Delete</button>
+      </div>
+      <div class="video-meta" id="video-meta"></div>
+    </div>
+  </section>
+
+  <!-- Model sheet -->
+  <section class="sheet" id="sheet-model" role="dialog" aria-modal="true" aria-labelledby="model-title" aria-hidden="true">
+    <div class="sheet-grab"></div>
+    <div class="sheet-head">
+      <div class="sheet-title-wrap">
+        <span class="sheet-eyebrow">Intelligence</span>
+        <h2 class="sheet-title" id="model-title">Fastest <span class="serif">Flash</span></h2>
+      </div>
+      <button class="sheet-close" data-close aria-label="Close"><span data-icon="close" data-size="17"></span></button>
+    </div>
+    <div class="sheet-body">
+      <div class="option-list" id="model-list"></div>
+    </div>
+    <div class="sheet-footer">
+      <span class="grow"></span>
+      <button class="btn secondary small" id="model-refresh"><span data-icon="refresh" data-size="14"></span> Refresh models</button>
+    </div>
+  </section>
+
+  <!-- Rename sheet -->
+  <section class="sheet" id="sheet-rename" role="dialog" aria-modal="true" aria-labelledby="rename-title" aria-hidden="true">
+    <div class="sheet-grab"></div>
+    <div class="sheet-head">
+      <div class="sheet-title-wrap">
+        <span class="sheet-eyebrow">Project</span>
+        <h2 class="sheet-title" id="rename-title">Name this <span class="serif">film</span></h2>
+      </div>
+      <button class="sheet-close" data-close aria-label="Close"><span data-icon="close" data-size="17"></span></button>
+    </div>
+    <div class="sheet-body">
+      <input class="text-input" id="rename-input" maxlength="60" autocomplete="off" placeholder="Untitled Motion">
+    </div>
+    <div class="sheet-footer">
+      <span class="grow"></span>
+      <button class="btn secondary small" data-close>Cancel</button>
+      <button class="btn primary small" id="rename-save">Save name</button>
+    </div>
+  </section>
+
+  <!-- Confirm sheet -->
+  <section class="sheet" id="sheet-confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-hidden="true">
+    <div class="sheet-grab"></div>
+    <div class="sheet-head">
+      <div class="sheet-title-wrap">
+        <span class="sheet-eyebrow">Careful</span>
+        <h2 class="sheet-title" id="confirm-title">Are you sure?</h2>
+      </div>
+      <button class="sheet-close" data-close aria-label="Close"><span data-icon="close" data-size="17"></span></button>
+    </div>
+    <div class="sheet-body">
+      <div class="confirm-body" id="confirm-text"></div>
+    </div>
+    <div class="sheet-footer">
+      <span class="grow"></span>
+      <button class="btn secondary small" data-close>Keep it</button>
+      <button class="btn danger small" id="confirm-ok">Confirm</button>
+    </div>
+  </section>
+
+  <noscript>
+    <div style="padding:24px;font-family:system-ui;font-size:14px">Motion Studio needs JavaScript to run.</div>
+  </noscript>
+
+  <script src="/app.js"></script>
+</body>
+</html>

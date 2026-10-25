@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --paper:#f2e8d5; --clay:#b65336; --ink:#26211b; --cream:#f7eeda; --mute:rgba(38,33,27,.5); --line:rgba(38,33,27,.2); }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; overflow:hidden; background:var(--paper); color:var(--ink); }
+  body { font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+  .frame { position:absolute; inset:0; padding:7vmin; display:flex; flex-direction:column; overflow:hidden; }
+
+  .top { display:flex; justify-content:space-between; align-items:flex-start; gap:4vmin; flex:none;
+         font:500 1.45vmin/1.6 "Courier New", monospace; letter-spacing:.2em; text-transform:uppercase;
+         animation:fade 1.2s .3s both; }
+  .top .right { text-align:right; }
+  .top b { font-weight:700; }
+
+  .stage { position:relative; flex:1; min-height:0; display:flex; flex-direction:column;
+           justify-content:flex-end; overflow:hidden; margin:0 -7vmin; padding:0 7vmin; }
+
+  .sun { position:absolute; left:50%; top:12%; width:168vmin; height:168vmin; margin-left:-84vmin;
+         border-radius:50%; background:var(--clay); opacity:0;
+         animation:sunIn 2.4s .5s both, rise 12s .2s linear both; }
+  .sun::after { content:''; position:absolute; inset:9vmin; border-radius:50%;
+                border:1px dashed rgba(247,238,218,.24); animation:turn 26s linear infinite; }
+
+  .type { position:relative; z-index:2; margin:0 0 3.2vmin; padding:0; font-weight:400;
+          font-family:Georgia, "Times New Roman", "Iowan Old Style", serif; font-style:italic;
+          font-size:13vmin; line-height:1; letter-spacing:-.035em; color:var(--cream); }
+  .type .line { display:block; overflow:hidden; padding:.1em 0 .22em; margin-bottom:-.12em; }
+  .type i { display:block; font-style:italic; transform:translateY(112%);
+            animation:lift 2s cubic-bezier(.14,.8,.2,1) both; }
+  .type .l1 i { animation-delay:1.5s }
+  .type .l2 { padding-left:9vmin }
+  .type .l2 i { animation-delay:2.5s }
+  .type .l3 { padding-left:24vmin }
+  .type .l3 i { animation-delay:3.5s }
+
+  .horizon { position:relative; z-index:2; height:1px; background:rgba(247,238,218,.55); transform-origin:left; flex:none;
+             animation:draw 2.6s .9s cubic-bezier(.3,.6,.2,1) both; }
+  .horizon::after { content:''; position:absolute; left:0; top:0; width:2.4vmin; height:1px; background:var(--ink); }
+
+  .after { position:relative; z-index:2; display:flex; justify-content:space-between; align-items:baseline; gap:4vmin;
+           padding-top:2vmin; flex:none; color:var(--cream);
+           font:500 1.32vmin/1.6 "Courier New", monospace; letter-spacing:.18em; text-transform:uppercase; }
+  .after .l { opacity:0; animation:fade 1.4s 4.4s both; }
+  .after .r { text-align:right; opacity:0; animation:fade 1.4s 4.9s both; }
+
+  .foot { display:flex; justify-content:space-between; align-items:baseline; gap:4vmin; margin-top:3vmin; flex:none;
+          color:var(--mute); font:500 1.3vmin/1.6 "Courier New", monospace; letter-spacing:.16em; text-transform:uppercase; }
+  .foot b { color:var(--ink); font-weight:700; }
+  .foot .last { opacity:0; animation:fade 1.6s 6.2s both; }
+
+  @keyframes fade { from { opacity:0 } to { opacity:1 } }
+  @keyframes sunIn { from { opacity:0 } to { opacity:1 } }
+  @keyframes rise { from { transform:translateY(10vmin) } to { transform:translateY(-4vmin) } }
+  @keyframes draw { from { transform:scaleX(0) } to { transform:scaleX(1) } }
+  @keyframes turn { from { transform:rotate(0) } to { transform:rotate(360deg) } }
+  @keyframes lift { from { transform:translateY(112%) } to { transform:translateY(0) } }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="top">
+    <div>Quiet sun<br><b>Plate 05</b></div>
+    <div class="right">05:42<br>Low horizon</div>
+  </div>
+
+  <div class="stage">
+    <div class="sun"></div>
+
+    <h1 class="type">
+      <span class="line l1"><i>the sun</i></span>
+      <span class="line l2"><i>takes its</i></span>
+      <span class="line l3"><i>time.</i></span>
+    </h1>
+
+    <div class="horizon"></div>
+    <div class="after">
+      <span class="l">First light</span>
+      <span class="r">Nothing to hurry</span>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>For a slow morning.</span>
+    <span class="last"><b>Twelve seconds</b></span>
+  </div>
+</div>
+</body>
+</html>
