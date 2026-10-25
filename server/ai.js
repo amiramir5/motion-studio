@@ -93,6 +93,10 @@ export function aiConfigured() {
   return Boolean(apiKey());
 }
 
+function authHeaders(extra) {
+  return { 'x-goog-api-key': apiKey(), ...extra };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -150,7 +154,8 @@ export async function listModels(force = false) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch(`${API_BASE}/models?key=${encodeURIComponent(apiKey())}&pageSize=200`, {
+    const response = await fetch(`${API_BASE}/models?pageSize=200`, {
+      headers: authHeaders(),
       signal: controller.signal
     });
     const data = await readJson(response);
@@ -171,13 +176,13 @@ export async function listModels(force = false) {
         const id = m.id.toLowerCase();
         let s = 0;
         if (id.includes('flash') && !id.includes('lite')) s += 30;
-        if (id.includes('flash-latest')) s += 10;
-        if (id.includes('lite')) s += 15;
+        if (id.includes('lite')) s -= 4;
+        if (/-latest$/.test(id)) s -= 8;
+        if (/preview|experimental/.test(id)) s -= 10;
         if (id.includes('pro')) s += 5;
-        if (id.includes('latest')) s += 6;
         const version = id.match(/(\d+)[._-](\d+)/);
         if (version) s += Number(version[1]) * 2 + Number(version[2]);
-        if (id.includes('image') || id.includes('tts') || id.includes('embedding')) s -= 100;
+        if (/image|tts|embedding|audio|live|omni|veo|imagen/.test(id)) s -= 100;
         return s;
       };
       return score(b) - score(a);
@@ -195,18 +200,41 @@ export async function listModels(force = false) {
   }
 }
 
+const GOOD_TTL = 10 * 60 * 1000;
+const PREFERRED_MODELS = ['gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash'];
+let lastGoodModel = { id: '', at: 0 };
+
+function isUsableModel(id) {
+  return !/image|tts|embedding|audio|live|omni|veo|imagen|computer[-_]?use|robotics/i.test(id);
+}
+
+function preferredModel(models) {
+  for (const id of PREFERRED_MODELS) {
+    if (models.some((m) => m.id === id)) return id;
+  }
+  return '';
+}
+
 export async function resolveModel(requested) {
   if (requested && requested.trim()) return requested.trim();
   if (process.env.GEMINI_MODEL && process.env.GEMINI_MODEL.trim()) {
     return process.env.GEMINI_MODEL.trim();
   }
+  if (lastGoodModel.id && Date.now() - lastGoodModel.at < GOOD_TTL) {
+    return lastGoodModel.id;
+  }
   try {
     const models = await listModels();
-    const flash = models.find((m) => /flash/i.test(m.id) && !/lite|image|tts/i.test(m.id));
+    const preferred = preferredModel(models);
+    if (preferred) return preferred;
+    const usable = models.filter((m) => isUsableModel(m.id));
+    const full = usable.filter((m) => !/lite/i.test(m.id));
+    const pool = full.length ? full : usable;
+    const flash = pool.find((m) => /flash/i.test(m.id));
     if (flash) return flash.id;
-    if (models[0]) return models[0].id;
+    if (pool[0]) return pool[0].id;
   } catch (e) {}
-  return 'gemini-flash-latest';
+  return 'gemini-2.5-flash';
 }
 
 export async function getHealth() {
@@ -349,10 +377,10 @@ async function streamOnce({ model, system, prompt, maxOutputTokens, temperature,
 
   try {
     const response = await fetch(
-      `${API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey())}`,
+      `${API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(bodyFor({ model, system, prompt, maxOutputTokens, temperature })),
         signal: controller.signal
       }
@@ -548,6 +576,10 @@ function cleanOutput(text) {
   return out.trim();
 }
 
+function isCompleteDocument(code) {
+  return /<\/html>$/i.test(String(code || '').trim());
+}
+
 export async function streamGeneration(params, handlers) {
   const {
     mode = 'generate',
@@ -619,26 +651,42 @@ export async function streamGeneration(params, handlers) {
 
   handlers.onMeta?.({ model, cached: false, direction: directionId, attempts: 1 });
 
+  const modelCandidates = await generationCandidates(model);
   let final = '';
   let usage = null;
+  let usedModel = model;
   try {
-    const first = await streamWithRetry(
-      { model, system, prompt: userPrompt, maxOutputTokens: 30000, temperature: 1, signal },
-      {
-        onDelta: (chunk) => handlers.onDelta(chunk),
-        onReset: (attempt) => {
-          final = '';
-          handlers.onReset?.({ attempt });
-        },
-        onRetry: (attempt, message) => handlers.onWarning?.(`Connection interrupted. Retry ${attempt}/3…`),
-        onFirstDelta: () => handlers.onPhase?.({ phase: 'writing' })
+    let incomplete = null;
+    for (const candidate of modelCandidates) {
+      if (candidate !== modelCandidates[0]) {
+        final = '';
+        handlers.onReset?.({ reason: 'model' });
+        handlers.onWarning?.(`The model stopped early. Retrying with ${candidate}…`);
       }
-    );
-    final = cleanOutput(first.text);
-    usage = first.usage;
+      const first = await streamWithRetry(
+        { model: candidate, system, prompt: userPrompt, maxOutputTokens: 30000, temperature: 1, signal },
+        {
+          onDelta: (chunk) => handlers.onDelta(chunk),
+          onReset: (attempt) => {
+            final = '';
+            handlers.onReset?.({ attempt });
+          },
+          onRetry: (attempt, message) => handlers.onWarning?.(`Connection interrupted. Retry ${attempt}/3…`),
+          onFirstDelta: () => handlers.onPhase?.({ phase: 'writing' })
+        }
+      );
+      const cleaned = cleanOutput(first.text);
+      usage = first.usage || usage;
+      if (cleaned.length >= 40 && isCompleteDocument(cleaned)) {
+        final = cleaned;
+        usedModel = candidate;
+        break;
+      }
+      incomplete = new AiError('The model returned an incomplete document. Try again.', 'TRUNCATED', true);
+    }
 
-    if (!final || final.length < 40) {
-      throw new AiError('The model returned an empty document. Try again.', 'EMPTY', true);
+    if (!final) {
+      throw incomplete || new AiError('The model returned an empty document. Try again.', 'EMPTY', true);
     }
 
     let violations = lintDesign(final);
@@ -652,7 +700,7 @@ export async function streamGeneration(params, handlers) {
         `Stage: ${width}x${height}, ${duration}s, ${fps}fps. Return the complete corrected HTML document only.\n\n` +
         `PREVIOUS DOCUMENT:\n${final}`;
       const repaired = await streamWithRetry(
-        { model, system: repairSystem, prompt: repairPrompt, maxOutputTokens: 30000, temperature: 0.9, signal },
+        { model: usedModel, system: repairSystem, prompt: repairPrompt, maxOutputTokens: 30000, temperature: 0.9, signal },
         {
           onDelta: (chunk) => handlers.onDelta(chunk),
           onReset: () => {
@@ -664,7 +712,11 @@ export async function streamGeneration(params, handlers) {
         }
       );
       const cleaned = cleanOutput(repaired.text);
-      if (cleaned.length > 40) final = cleaned;
+      if (cleaned.length > 40 && isCompleteDocument(cleaned)) {
+        final = cleaned;
+      } else {
+        handlers.onWarning?.('The refined draft was incomplete, so the original was kept.');
+      }
       violations = lintDesign(final);
       if (violations.length) {
         handlers.onWarning?.(`Art direction still contains: ${violations.join(', ')}. You can ask AI to refine it.`);
@@ -676,7 +728,7 @@ export async function streamGeneration(params, handlers) {
     cacheSet(cacheKey, final);
     handlers.onDone?.({
       code: final,
-      model,
+      model: usedModel,
       cached: false,
       violations: lintDesign(final),
       direction: directionId,
@@ -692,45 +744,69 @@ export async function streamGeneration(params, handlers) {
   }
 }
 
-export async function testConnection(model) {
-  if (!aiConfigured()) {
-    throw new AiError('No API key configured. Add GEMINI_API_KEY to .env.', 'NO_KEY', false);
-  }
-  const chosen = await resolveModel(model || '');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  const started = Date.now();
+async function candidateModels(requested) {
+  const primary = await resolveModel(requested || '');
+  const list = [primary];
   try {
-    const body = {
-      contents: [{ role: 'user', parts: [{ text: 'Reply with the single word OK.' }] }],
-      generationConfig: { temperature: 0, maxOutputTokens: 8 }
-    };
-    const thinking = thinkingConfig(chosen);
-    if (thinking) body.generationConfig.thinkingConfig = thinking;
+    const models = await listModels();
+    const usable = models.filter((m) => isUsableModel(m.id));
+    const ordered = [
+      ...PREFERRED_MODELS.filter((id) => models.some((m) => m.id === id)),
+      ...usable.filter((m) => !/lite/i.test(m.id)).map((m) => m.id),
+      ...usable.map((m) => m.id)
+    ];
+    for (const id of ordered) {
+      if (list.length >= 3) break;
+      if (isUsableModel(id) && !list.includes(id)) list.push(id);
+    }
+  } catch (e) {}
+  return list;
+}
 
-    let response = await fetch(
-      `${API_BASE}/models/${encodeURIComponent(chosen)}:generateContent?key=${encodeURIComponent(apiKey())}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      }
-    );
+async function generationCandidates(model) {
+  const list = [model];
+  try {
+    const models = await listModels();
+    const usable = models.filter((m) => isUsableModel(m.id));
+    const ordered = [
+      ...PREFERRED_MODELS.filter((id) => models.some((m) => m.id === id)),
+      ...usable.filter((m) => !/lite/i.test(m.id)).map((m) => m.id),
+      ...usable.map((m) => m.id)
+    ];
+    for (const id of ordered) {
+      if (list.length >= 2) break;
+      if (isUsableModel(id) && !list.includes(id)) list.push(id);
+    }
+  } catch (e) {}
+  return list;
+}
+
+async function testModel(chosen) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 9000);
+  const started = Date.now();
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: 'Reply with the single word OK.' }] }],
+    generationConfig: { temperature: 0, maxOutputTokens: 8 }
+  };
+  const thinking = thinkingConfig(chosen);
+  if (thinking) body.generationConfig.thinkingConfig = thinking;
+
+  const send = () =>
+    fetch(`${API_BASE}/models/${encodeURIComponent(chosen)}:generateContent`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+
+  try {
+    let response = await send();
     if (!response.ok) {
-      const text = await response.text();
-      const error = mapHttpError(response.status, text);
-      if (error.code === 'THINKING_CONFIG') {
+      const error = mapHttpError(response.status, await response.text());
+      if (error.code === 'THINKING_CONFIG' || (response.status === 400 && body.generationConfig.thinkingConfig)) {
         delete body.generationConfig.thinkingConfig;
-        response = await fetch(
-          `${API_BASE}/models/${encodeURIComponent(chosen)}:generateContent?key=${encodeURIComponent(apiKey())}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: controller.signal
-          }
-        );
+        response = await send();
         if (!response.ok) throw mapHttpError(response.status, await response.text());
       } else {
         throw error;
@@ -741,6 +817,7 @@ export async function testConnection(model) {
       .map((part) => part.text || '')
       .join('')
       .trim();
+    lastGoodModel = { id: chosen, at: Date.now() };
     return {
       ok: true,
       model: chosen,
@@ -749,12 +826,31 @@ export async function testConnection(model) {
     };
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new AiError('Connection timed out after 15s.', 'TIMEOUT', true);
+      throw new AiError(`Connection timed out (${chosen}).`, 'TIMEOUT', true);
     }
     throw error;
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function testConnection(model) {
+  if (!aiConfigured()) {
+    throw new AiError('No API key configured. Add GEMINI_API_KEY to .env.', 'NO_KEY', false);
+  }
+  const candidates = await candidateModels(model);
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      return await testModel(candidate);
+    } catch (error) {
+      if (error instanceof AiError && ['NO_KEY', 'INVALID_KEY', 'CANCELLED'].includes(error.code)) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+  throw lastError || new AiError('Could not reach Gemini.', 'NETWORK', true);
 }
 
 export function directionsForClient() {
