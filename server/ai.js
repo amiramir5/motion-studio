@@ -725,6 +725,7 @@ export async function streamGeneration(params, handlers) {
       }
     }
 
+    lastGoodModel = { id: usedModel, at: Date.now() };
     cacheSet(cacheKey, final);
     handlers.onDone?.({
       code: final,
