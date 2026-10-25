@@ -85,7 +85,7 @@ const cache = new Map();
 
 export async function loadPreset(id) {
   if (cache.has(id)) return cache.get(id);
-  const response = await fetch(`/presets/${id}.html`, { cache: 'no-cache' });
+  const response = await fetch(`presets/${id}.html`, { cache: 'no-cache' });
   if (!response.ok) throw new Error('Could not load that preset.');
   const html = await response.text();
   cache.set(id, html);

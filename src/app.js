@@ -18,6 +18,8 @@ import {
 } from './util.js';
 
 const STORE_KEY = 'ms.studio.v1';
+const STATIC_DEMO =
+  /(^|\.)github\.io$/i.test(location.hostname) || !/^\/(?:index\.html)?$/.test(location.pathname);
 const DEFAULT_TITLE = 'Untitled Motion';
 const QUALITY_LABEL = { draft: 'Draft', high: 'High', max: 'Max' };
 const RES_LABEL = { 720: '720p', 1080: '1080p', 1440: '1440p' };
@@ -475,11 +477,26 @@ function boot() {
   bindSheets();
   syncEverything();
   showView('create');
-  refreshServerHealth();
-  refreshAiHealth();
-  refreshDirectionsSafe();
+  if (STATIC_DEMO) {
+    health = { chrome: 'static demo', ffmpeg: 'static demo', node: '—' };
+    overview = {
+      configured: false,
+      ok: false,
+      error: 'Static preview — AI and export run on the local studio.',
+      checking: false,
+      defaultModel: '',
+      modelCount: 0
+    };
+    renderAbout();
+    updateAiStatusUi();
+    renderDirections();
+    setTimeout(() => toast('Static preview · AI and MP4 export run on the local studio.'), 1100);
+  } else {
+    refreshServerHealth();
+    refreshAiHealth();
+    refreshDirectionsSafe();
+  }
   renderIdeas();
-  renderDirections();
   loadModels(false);
 
   setTimeout(() => {
@@ -497,9 +514,9 @@ function boot() {
     if (document.hidden && preview && preview.playing) preview.pause();
   });
 
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  if (!STATIC_DEMO && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     setTimeout(() => {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
+      navigator.serviceWorker.register('sw.js').catch(() => {});
     }, 2200);
   }
 }
@@ -1252,6 +1269,11 @@ function renderDirections() {
 }
 
 async function refreshAiHealth(force = false) {
+  if (STATIC_DEMO) {
+    overview.checking = false;
+    updateAiStatusUi();
+    return;
+  }
   if (!force && Date.now() - healthAt < 45000) return;
   healthAt = Date.now();
   overview.checking = true;
@@ -1275,6 +1297,10 @@ async function refreshAiHealth(force = false) {
 }
 
 async function runAiTest({ manual = false } = {}) {
+  if (STATIC_DEMO) {
+    toast('Static preview — test the key in the local studio.');
+    return { ok: false, configured: false, error: 'Static preview' };
+  }
   const button = els['ai-test-btn'];
   button.disabled = true;
   button.textContent = 'Testing…';
@@ -1332,19 +1358,30 @@ function updateAiStatusUi() {
       text = overview.error || 'Gemini is unreachable.';
     }
   }
+  if (STATIC_DEMO) {
+    kind = 'warn';
+    text = 'Static preview · AI runs locally';
+  }
   els['ai-status-dot'].className = `status-dot ${overview.checking ? 'busy' : kind}`;
   els['ai-status-text'].textContent = text;
   els['ai-status-text'].title = text;
-  els['ai-key-setup'].classList.toggle('hidden', overview.checking || Boolean(overview.configured));
+  els['ai-key-setup'].classList.toggle('hidden', STATIC_DEMO || overview.checking || Boolean(overview.configured));
   els['set-ai-dot'].className = `status-dot ${overview.checking ? 'busy' : kind}`;
   els['set-ai-text'].textContent = text;
   els['set-ai-text'].title = text;
   els['set-ai-test'].disabled = overview.checking;
+  els['ai-test-btn'].disabled = overview.checking;
 }
 
 /* ---------------------------------------------------------------- models */
 
 async function loadModels(force = false) {
+  if (STATIC_DEMO) {
+    modelsLoaded = false;
+    models = [];
+    renderModels();
+    return;
+  }
   if (!overview.configured) {
     modelsLoaded = false;
     renderModels();
@@ -1468,6 +1505,10 @@ function userMessage(error) {
 
 async function runGeneration() {
   if (generating) return;
+  if (STATIC_DEMO) {
+    showAiError('Static preview — AI generation runs on the local studio. Run npm start and open localhost:4173.');
+    return;
+  }
   const mode = state.mode;
   const prompt = els['ai-prompt'].value.trim();
   if (mode !== 'generate' && !state.code.trim()) {
@@ -1636,6 +1677,10 @@ function cancelGeneration() {
 /* ---------------------------------------------------------------- render */
 
 function openRenderSheet() {
+  if (STATIC_DEMO) {
+    toast('Static preview — MP4 export runs on the local studio.');
+    return;
+  }
   if (!state.code.trim()) {
     toast('Write or load a scene first.');
     return;
@@ -1673,6 +1718,10 @@ function showRenderError(message) {
 }
 
 async function startRender() {
+  if (STATIC_DEMO) {
+    toast('Static preview — MP4 export runs on the local studio.');
+    return;
+  }
   if (rendering || !state.code.trim()) return;
   hideRenderError();
   const design = DESIGNS[state.aspect];
@@ -1789,6 +1838,11 @@ function cancelRender() {
 /* ---------------------------------------------------------------- library */
 
 async function loadLibrary() {
+  if (STATIC_DEMO) {
+    library = [];
+    renderLibrary();
+    return;
+  }
   try {
     const response = await fetch('/api/library', { cache: 'no-store' });
     const data = await response.json();
@@ -1803,7 +1857,14 @@ function renderLibrary() {
   if (!els['lib-body']) return;
   els['lib-count'].textContent = `${library.length} film${library.length === 1 ? '' : 's'}`;
   if (!library.length) {
-    els['lib-body'].innerHTML = `
+    els['lib-body'].innerHTML = STATIC_DEMO
+      ? `
+      <div class="library-empty">
+        <div class="big-glyph">${iconHtml('film', 26)}</div>
+        <h3>Static preview</h3>
+        <p>Rendered films live on the local studio. Run npm start and open localhost:4173 to export and keep them here.</p>
+      </div>`
+      : `
       <div class="library-empty">
         <div class="big-glyph">${iconHtml('film', 26)}</div>
         <h3>No films yet</h3>
@@ -2025,6 +2086,7 @@ function bindSettings() {
 }
 
 async function refreshDirectionsSafe() {
+  if (STATIC_DEMO) return;
   const list = await aiDirections();
   if (list.length) {
     directions = [...list, { id: 'random', name: 'Random', palette: ['#85827a', '#b0563a', '#2f6b4f'] }];
@@ -2035,6 +2097,11 @@ async function refreshDirectionsSafe() {
 /* ---------------------------------------------------------------- health / about */
 
 async function refreshServerHealth() {
+  if (STATIC_DEMO) {
+    health = { chrome: 'static demo', ffmpeg: 'static demo', node: '—' };
+    renderAbout();
+    return;
+  }
   try {
     const response = await fetch('/api/health', { cache: 'no-store' });
     health = await response.json();

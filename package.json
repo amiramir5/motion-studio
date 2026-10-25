@@ -5,7 +5,7 @@
   "description": "Turn HTML/CSS/JS motion graphics into frame-accurate MP4 films.",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/styles.css --bundle --minify --external:/fonts/* --outfile=public/styles.css --log-level=warning && esbuild src/app.js --bundle --minify --format=iife --target=es2020 --outfile=public/app.js --log-level=warning",
+    "build": "esbuild src/styles.css --bundle --minify --external:./fonts/* --outfile=docs/styles.css --log-level=warning && esbuild src/app.js --bundle --minify --format=iife --target=es2020 --outfile=docs/app.js --log-level=warning",
     "start": "npm run build && node server/index.js",
     "dev": "npm run build && node --watch server/index.js",
     "render:test": "node scripts/render-test.js",

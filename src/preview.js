@@ -47,7 +47,7 @@ export class Preview {
 
   async init() {
     if (this.runtimeSource) return;
-    const response = await fetch('/runtime.js', { cache: 'no-cache' });
+    const response = await fetch('runtime.js', { cache: 'no-cache' });
     if (!response.ok) throw new Error('Could not load the clock runtime.');
     this.runtimeSource = await response.text();
   }

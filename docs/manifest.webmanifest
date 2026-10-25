@@ -2,9 +2,9 @@
   "name": "Motion Studio",
   "short_name": "Motion",
   "description": "Turn typographic HTML into frame-accurate motion films.",
-  "id": "/",
-  "start_url": "/",
-  "scope": "/",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#f1efe9",
@@ -12,25 +12,25 @@
   "categories": ["design", "productivity", "video"],
   "icons": [
     {
-      "src": "/icons/icon-192.png",
+      "src": "./icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-512.png",
+      "src": "./icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/maskable-512.png",
+      "src": "./icons/maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/icon.svg",
+      "src": "./icon.svg",
       "sizes": "any",
       "type": "image/svg+xml"
     }

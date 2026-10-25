@@ -1,7 +1,7 @@
 import { postSSE, isAbort, networkError } from './sse.js';
 import { sleep } from './util.js';
 
-const BASE = '/api/ai';
+const BASE = 'api/ai';
 
 function abortError() {
   const error = new Error('Cancelled.');
