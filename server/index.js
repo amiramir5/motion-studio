@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import express from 'express';
 import {
@@ -16,6 +17,7 @@ import { listLibrary, addToLibrary, deleteFromLibrary, getLibraryItem } from './
 import {
   DIRECTIONS,
   aiConfigured,
+  detectFilmDuration,
   directionsForClient,
   getHealth,
   invalidateModelCache,
@@ -73,6 +75,7 @@ app.get('/api/health', async (req, res) => {
     chrome: CHROME_PATH ? path.basename(CHROME_PATH) : null,
     ffmpeg,
     ai: { configured: aiConfigured() },
+    canSetKey: isLocalRequest(req),
     node: process.version
   });
 });
@@ -103,9 +106,21 @@ app.get('/api/ai/directions', (req, res) => {
 
 const ENV_PATH = path.join(ROOT, '.env');
 
-function isLoopbackRequest(req) {
-  const address = String(req.socket?.remoteAddress || '');
-  return address === '::1' || address === '127.0.0.1' || address === '::ffff:127.0.0.1';
+function localAddresses() {
+  const addresses = new Set(['127.0.0.1', '::1']);
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry?.address) addresses.add(String(entry.address).replace(/^::ffff:/i, ''));
+    }
+  }
+  return addresses;
+}
+
+// A browser on this machine can reach the server over its LAN address too, so
+// treat addresses owned by this host as local while keeping phones out.
+function isLocalRequest(req) {
+  const address = String(req.socket?.remoteAddress || req.ip || '').replace(/^::ffff:/i, '');
+  return localAddresses().has(address);
 }
 
 function writeEnvKey(key) {
@@ -129,7 +144,7 @@ function writeEnvKey(key) {
 }
 
 app.post('/api/settings/key', async (req, res) => {
-  if (!isLoopbackRequest(req)) {
+  if (!isLocalRequest(req)) {
     return res.status(403).json({
       ok: false,
       code: 'LOOPBACK_ONLY',
@@ -238,6 +253,28 @@ class Semaphore {
 
 const renderSlots = new Semaphore(2);
 
+app.post('/api/measure', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const code = String(body.code || '');
+    if (!code.trim()) return res.status(400).json({ ok: false, error: 'No code to measure.' });
+    if (code.length > 1.6 * 1024 * 1024) {
+      return res.status(413).json({ ok: false, error: 'Document is too large (max 1.6MB).' });
+    }
+    const aspect = ['9:16', '16:9', '1:1', '4:5'].includes(body.aspect) ? body.aspect : '9:16';
+    const size = resolveSize(aspect, '1080');
+    const duration = Math.min(30, Math.max(1, Number(body.duration) || 10));
+    const detected = await detectFilmDuration(code, {
+      width: size.designWidth,
+      height: size.designHeight,
+      requested: duration
+    });
+    res.json({ ok: true, ...detected });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message || 'Could not measure the film.' });
+  }
+});
+
 app.post('/api/render', async (req, res) => {
   sseStart(res);
   const id = `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
@@ -264,6 +301,7 @@ app.post('/api/render', async (req, res) => {
       : '1080';
     const size = resolveSize(aspect, resolution);
     const title = String(body.title || 'Custom Motion').slice(0, 80) || 'Custom Motion';
+    const lockDuration = body.lockDuration === true;
 
     sseSend(res, 'job', {
       id,
@@ -295,6 +333,7 @@ app.post('/api/render', async (req, res) => {
       fps,
       duration,
       quality,
+      lockDuration,
       signal: controller.signal,
       onProgress: (progress) => sseSend(res, 'progress', progress)
     });

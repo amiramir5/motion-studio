@@ -1,6 +1,9 @@
 const MIN_DURATION = 2;
 const MAX_DURATION = 30;
 const TAIL = 0.5;
+const MAX_PROBE_SECONDS = 32;
+const PROBE_STEP = 1 / 30;
+const QUIET_SECONDS = 1.2;
 
 export function parseDeclaredDuration(code) {
   const match = String(code || '').match(
@@ -14,75 +17,125 @@ export function parseDeclaredDuration(code) {
   return value;
 }
 
-export function measurePageDuration(page) {
-  return page.evaluate(() => {
-    const clock = window.__MS_CLOCK__ || {};
-    let end = 0;
-    let indefinite = false;
+/**
+ * Fast-forwards the film's virtual clock inside the loaded page and reports
+ * when the scene actually stops moving. This catches CSS animations, timed
+ * reveals and requestAnimationFrame work, not just declared metadata.
+ */
+export async function probePageDuration(page, options = {}) {
+  const max = Number(options.max) > 0 ? Number(options.max) : MAX_PROBE_SECONDS;
+  const step = Number(options.step) > 0 ? Number(options.step) : PROBE_STEP;
+  const quiet = Number(options.quiet) > 0 ? Number(options.quiet) : QUIET_SECONDS;
 
-    const absorb = (value) => {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return;
-      if (value > end) end = value;
-    };
-
-    const parseClock = (raw) => {
-      if (!raw) return null;
-      const text = String(raw).trim();
-      if (/^indefinite$/i.test(text)) return Infinity;
-      const match = text.match(/^(-?[\d.]+)\s*(ms|s|min|h)?$/i);
-      if (!match) return null;
-      const amount = Number(match[1]);
-      if (!Number.isFinite(amount)) return null;
-      const unit = (match[2] || 's').toLowerCase();
-      const scale = unit === 'ms' ? 0.001 : unit === 'min' ? 60 : unit === 'h' ? 3600 : 1;
-      return amount * scale * 1000;
-    };
-
-    try {
-      for (const animation of document.getAnimations()) {
-        const timing = animation.effect?.getComputedTiming?.();
-        if (!timing) continue;
-        if (timing.endTime === Infinity) {
-          indefinite = true;
-          continue;
+  try {
+    return await page.evaluate(
+      ({ max, step, quiet }) => {
+        const clock = window.__MS_CLOCK__;
+        if (!clock || typeof clock.step !== 'function') {
+          return { measured: 0, indefinite: false, settled: true, supported: false };
         }
-        absorb(timing.endTime);
-      }
-    } catch (e) {}
 
-    try {
-      document.querySelectorAll('animate, animateTransform, animateMotion, set').forEach((node) => {
-        const dur = parseClock(node.getAttribute('dur'));
-        if (dur === null) return;
-        if (dur === Infinity) {
-          indefinite = true;
-          return;
-        }
-        const begin = parseClock(node.getAttribute('begin')) || 0;
-        if (begin === Infinity) return;
-        const repeat = node.getAttribute('repeatCount');
-        let cycles = 1;
-        if (repeat && /indefinite/i.test(repeat)) {
-          indefinite = true;
-          return;
-        }
-        if (repeat) {
-          const value = Number(repeat);
-          if (Number.isFinite(value) && value > 0) cycles = value;
-        }
-        absorb(begin + dur * cycles);
-      });
-    } catch (e) {}
+        const stepMs = step * 1000;
+        const limit = max * 1000;
+        const quietMs = quiet * 1000;
+        let lastChange = 0;
+        let endless = false;
+        let settled = false;
 
-    if (clock.rafs && clock.rafs.size > 0 && end === 0) indefinite = true;
+        const animationState = () => {
+          let active = false;
+          let infinite = false;
+          try {
+            for (const animation of document.getAnimations()) {
+              let timing;
+              try {
+                timing = animation.effect?.getComputedTiming?.();
+              } catch (e) {
+                continue;
+              }
+              if (!timing) continue;
+              if (timing.endTime === Infinity) {
+                infinite = true;
+                continue;
+              }
+              const end = Number(timing.endTime) || 0;
+              if (!(end > 0)) continue;
+              let current = 0;
+              try {
+                current = Number(animation.currentTime) || 0;
+              } catch (e) {
+                current = 0;
+              }
+              if (current < end) active = true;
+            }
+          } catch (e) {}
+          return { active, infinite };
+        };
 
-    return { measured: end > 0 ? end / 1000 : 0, indefinite };
-  });
+        for (let t = 0; t <= limit; t += stepMs) {
+          let dueTimer = false;
+          try {
+            for (const timer of clock.timers.values()) {
+              if (timer.due <= t) {
+                dueTimer = true;
+                break;
+              }
+            }
+          } catch (e) {}
+          let rafsBefore = 0;
+          try {
+            rafsBefore = clock.rafs.size;
+          } catch (e) {}
+
+          try {
+            clock.step(t);
+          } catch (e) {}
+
+          const animation = animationState();
+          if (animation.infinite) endless = true;
+
+          const changed = dueTimer || rafsBefore > 0 || animation.active;
+          if (changed) lastChange = t;
+
+          let pending = animation.active;
+          if (!pending) {
+            try {
+              pending = clock.timers.size > 0 || clock.rafs.size > 0;
+            } catch (e) {
+              pending = false;
+            }
+          }
+
+          if (!pending && t - lastChange >= quietMs) {
+            settled = true;
+            break;
+          }
+        }
+
+        return {
+          measured: lastChange / 1000,
+          indefinite: endless || !settled,
+          settled,
+          supported: true
+        };
+      },
+      { max, step, quiet }
+    );
+  } catch (e) {
+    return { measured: 0, indefinite: false, settled: false, supported: false, error: e.message };
+  }
 }
 
-export function resolveFilmDuration({ requested = 10, declared = null, measured = 0, indefinite = false } = {}) {
+export function resolveFilmDuration({
+  requested = 10,
+  declared = null,
+  measured = 0,
+  indefinite = false,
+  settled = true
+} = {}) {
   const hint = Math.min(MAX_DURATION, Math.max(MIN_DURATION, Number(requested) || 10));
   const observed = Number(measured) || 0;
+  const usable = settled && observed >= 0.4;
   let duration;
   let source;
   let warning = '';
@@ -90,7 +143,12 @@ export function resolveFilmDuration({ requested = 10, declared = null, measured 
   if (declared) {
     duration = declared;
     source = 'declared';
-  } else if (observed >= 2.5) {
+    if (usable && observed > declared + 0.2) {
+      duration = observed + TAIL;
+      source = 'declared+measured';
+      warning = 'extended';
+    }
+  } else if (usable) {
     duration = observed + TAIL;
     source = 'measured';
   } else {
@@ -99,13 +157,7 @@ export function resolveFilmDuration({ requested = 10, declared = null, measured 
     warning = indefinite ? 'loop' : 'missing';
   }
 
-  if (observed > duration + 0.2) {
-    duration = observed;
-    source = `${source}+measured`;
-  }
-  if (declared && observed > declared + 0.2) {
-    warning = 'extended';
-  }
+  if (!settled && !declared && !usable) warning = warning || 'loop';
 
   duration = Math.min(MAX_DURATION, Math.max(MIN_DURATION, Math.ceil(duration * 10) / 10));
   return {
@@ -113,7 +165,8 @@ export function resolveFilmDuration({ requested = 10, declared = null, measured 
     source,
     warning,
     declared,
-    measured: observed,
-    indefinite
+    measured: Math.round(observed * 100) / 100,
+    indefinite,
+    settled
   };
 }

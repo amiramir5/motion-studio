@@ -32,3 +32,28 @@ export async function renderFilm(params, handlers = {}, signal) {
   if (!done) throw new Error('The renderer stopped before producing a file.');
   return done;
 }
+
+export async function measureFilm(params, signal) {
+  let response;
+  try {
+    response = await fetch('api/measure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+      signal
+    });
+  } catch (error) {
+    if (isAbort(error) || signal?.aborted) throw networkError(error);
+    throw networkError(error);
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (e) {
+    payload = null;
+  }
+  if (!response.ok || !payload?.ok) {
+    throw new Error(payload?.error || 'Could not measure the film.');
+  }
+  return payload;
+}

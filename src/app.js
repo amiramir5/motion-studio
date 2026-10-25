@@ -3,7 +3,7 @@ import { DESIGNS, Preview } from './preview.js';
 import { createEditor } from './editor.js';
 import { PRESETS, loadPreset, presetArtHtml } from './presets.js';
 import { aiHealth, aiModels, aiDirections, aiTest, generate, setGeminiKey } from './ai-client.js';
-import { renderFilm } from './render-client.js';
+import { renderFilm, measureFilm } from './render-client.js';
 import { getLang, setLang, t, localize, applyDocumentLang, toggleLang, LANG_KEY } from './i18n.js';
 import {
   escapeHtml,
@@ -154,6 +154,7 @@ function loadState() {
       : '1080',
     fps: [30, 60].includes(Number(saved.fps)) ? Number(saved.fps) : 60,
     duration: clamp(Number(saved.duration) || 10, 2, 30),
+    durationLocked: Boolean(saved.durationLocked),
     quality: ['draft', 'high', 'max'].includes(saved.quality) ? saved.quality : 'high',
     guides: Boolean(saved.guides),
     strict: saved.strict !== false,
@@ -196,6 +197,8 @@ let library = [];
 let rendering = false;
 let renderController = null;
 let renderToken = 0;
+let measuredDuration = 0;
+let keyCanEdit = null;
 let currentVideo = null;
 let installEvent = null;
 let confirmAction = null;
@@ -673,10 +676,10 @@ function cacheElements() {
     'sheet-ai', 'ai-status-dot', 'ai-status-text', 'ai-test-btn', 'ai-mode', 'ai-prompt',
     'ai-prompt-hint', 'ai-prompt-count', 'ai-ideas', 'ai-directions', 'ai-direction-label',
     'ai-strict', 'ai-gen-panel', 'ai-gen-phase', 'ai-gen-time', 'ai-gen-meta', 'ai-error',
-    'ai-error-text', 'ai-key-setup', 'ai-open-key-settings', 'ai-surprise', 'ai-generate',
+    'ai-error-text', 'ai-key-setup', 'ai-open-key-settings', 'ai-key-chip', 'ai-surprise', 'ai-generate',
     'sheet-presets', 'preset-grid', 'sheet-render', 'render-name', 'render-summary-meta',
     'render-res', 'render-res-value', 'render-fps', 'render-quality', 'render-quality-value',
-    'render-output', 'render-estimate', 'render-form', 'render-progress', 'progress-name',
+    'render-output', 'render-estimate', 'render-measure', 'render-measure-state', 'render-apply-measure', 'render-form', 'render-progress', 'progress-name',
     'progress-meta', 'progress-num', 'progress-detail', 'progress-bar', 'progress-caption',
     'progress-fps', 'render-done', 'done-sub', 'done-poster', 'done-meta', 'done-warnings',
     'done-watch', 'done-download', 'render-error', 'render-error-text', 'render-cancel',
@@ -928,6 +931,20 @@ function isLocalHost() {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
 }
 
+function openKeySettings() {
+  closeSheet();
+  showView('settings');
+  setTimeout(() => {
+    els['key-card']?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (els['key-input'] && !els['key-input'].disabled) {
+      els['key-input'].focus({ preventScroll: true });
+      return;
+    }
+    if (STATIC_DEMO) toast(t('settings.keyStatic'), { duration: 8000 });
+    else if (!isLocalHost()) toast(t('settings.keyLoopback'), { duration: 8000 });
+  }, 360);
+}
+
 function syncKeyCard() {
   if (!els['key-status']) return;
   const notice = keyNotice.until > Date.now() ? keyNotice : null;
@@ -944,7 +961,7 @@ function syncKeyCard() {
     'warn',
     notice ? notice.kind === 'warn' : !overview.configured
   );
-  const canEdit = !STATIC_DEMO && isLocalHost();
+  const canEdit = !STATIC_DEMO && (keyCanEdit === null ? isLocalHost() : keyCanEdit);
   els['key-form'].classList.toggle('hidden', !canEdit);
   els['key-input'].disabled = !canEdit;
   els['key-save'].disabled = false;
@@ -1217,14 +1234,8 @@ function bindSheets() {
   els['ai-strict'].addEventListener('click', () => toggleStrict());
   els['set-strict'].addEventListener('click', () => toggleStrict());
   els['ai-test-btn'].addEventListener('click', () => runAiTest({ manual: true }));
-  els['ai-open-key-settings'].addEventListener('click', () => {
-    closeSheet();
-    showView('settings');
-    setTimeout(() => {
-      els['key-card']?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      if (!els['key-input'].disabled) els['key-input'].focus();
-    }, 360);
-  });
+  els['ai-open-key-settings'].addEventListener('click', openKeySettings);
+  els['ai-key-chip'].addEventListener('click', openKeySettings);
   els['key-save'].addEventListener('click', saveGeminiKey);
   els['key-input'].addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
@@ -1250,6 +1261,8 @@ function bindSheets() {
   });
   els['gen-pill-cancel'].addEventListener('click', cancelGeneration);
   els['render-start'].addEventListener('click', startRender);
+  els['render-measure'].addEventListener('click', measureCurrentFilm);
+  els['render-apply-measure'].addEventListener('click', applyMeasuredDuration);
   els['render-cancel'].addEventListener('click', cancelRender);
   els['render-again'].addEventListener('click', () => {
     setRenderStage('form');
@@ -1916,10 +1929,12 @@ async function runGeneration() {
     const durationChanged = Math.abs(nextDuration - state.duration) >= 0.05;
     if (durationChanged) {
       state.duration = nextDuration;
+      state.durationLocked = false;
       if (preview) preview.setDuration(state.duration);
       syncChrome();
       syncSettings();
     }
+    state.durationLocked = false;
     setCode(done.code, { silentEditor: false, playAfter: true });
     if (done.direction) {
       state.direction = done.direction;
@@ -2003,6 +2018,73 @@ function cancelGeneration() {
 
 /* ---------------------------------------------------------------- render */
 
+function resetMeasureUi() {
+  if (!els['render-measure-state']) return;
+  els['render-measure-state'].textContent = t('render.measureHint');
+  els['render-apply-measure'].classList.add('hidden');
+  measuredDuration = 0;
+}
+
+async function measureCurrentFilm() {
+  if (STATIC_DEMO) {
+    toast(t('render.measureStatic'));
+    return;
+  }
+  if (!state.code.trim()) {
+    toast(t('toast.writeFirst'));
+    return;
+  }
+  const button = els['render-measure'];
+  button.disabled = true;
+  els['render-apply-measure'].classList.add('hidden');
+  els['render-measure-state'].textContent = t('render.measuring');
+  try {
+    const result = await measureFilm({
+      code: state.code,
+      aspect: state.aspect,
+      duration: state.duration
+    });
+    measuredDuration = Number(result.duration) || 0;
+    const end = Number(result.measured) || 0;
+    const label = result.settled && end > 0 ? end.toFixed(1) : String(measuredDuration);
+    els['render-measure-state'].textContent = result.indefinite
+      ? t('render.measuredLoop', { s: label })
+      : t('render.measured', { s: label });
+    if (Math.abs(measuredDuration - state.duration) >= 0.05) {
+      els['render-apply-measure'].textContent = t('render.applyMeasure', {
+        s: measuredDuration
+      });
+      els['render-apply-measure'].classList.remove('hidden');
+    }
+  } catch (error) {
+    els['render-measure-state'].textContent = t('render.measureFailed');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function applyMeasuredDuration() {
+  if (!measuredDuration) return;
+  state.duration = measuredDuration;
+  state.durationLocked = true;
+  preview?.setDuration(state.duration);
+  syncChrome();
+  syncSettings();
+  const design = DESIGNS[state.aspect];
+  els['render-summary-meta'].textContent = t('common.stageMeta', {
+    w: design.width,
+    h: design.height,
+    fps: state.fps,
+    d: state.duration
+  });
+  els['render-output'].textContent = `${design.width} × ${design.height} · ${t('common.frames', {
+    n: state.duration * state.fps
+  })}`;
+  els['render-apply-measure'].classList.add('hidden');
+  els['render-measure-state'].textContent = t('render.measuredApplied', { s: state.duration });
+  saveSoon();
+}
+
 function openRenderSheet() {
   if (STATIC_DEMO) {
     toast(t('toast.staticExport'));
@@ -2013,6 +2095,7 @@ function openRenderSheet() {
     return;
   }
   syncSettings();
+  resetMeasureUi();
   setRenderStage('form');
   hideRenderError();
   els['render-name'].textContent = displayTitle(state.title);
@@ -2082,7 +2165,8 @@ async function startRender() {
     fps: state.fps,
     duration: state.duration,
     quality: state.quality,
-    resolution: state.resolution
+    resolution: state.resolution,
+    lockDuration: state.durationLocked
   };
 
   try {
@@ -2296,6 +2380,7 @@ async function openVideoCode() {
     const source = await response.text();
     state.title = currentVideo.title;
     state.duration = clamp(Math.round(currentVideo.duration || state.duration), 2, 30);
+    state.durationLocked = true;
     state.fps = [30, 60].includes(currentVideo.fps) ? currentVideo.fps : state.fps;
     if (currentVideo.aspect && DESIGNS[currentVideo.aspect]) state.aspect = currentVideo.aspect;
     saveSoon();
@@ -2394,6 +2479,7 @@ function bindSettings() {
   });
   els['set-duration'].addEventListener('input', (event) => {
     state.duration = clamp(Number(event.target.value) || 10, 2, 30);
+    state.durationLocked = true;
     saveSoon();
     if (preview) {
       preview.setDuration(state.duration);
@@ -2431,6 +2517,7 @@ function bindSettings() {
         state.title = DEFAULT_TITLE;
         state.code = '';
         state.duration = 10;
+        state.durationLocked = false;
         state.fps = 60;
         state.aspect = '9:16';
         state.resolution = '1080';
@@ -2471,10 +2558,12 @@ async function refreshServerHealth() {
   try {
     const response = await fetch('/api/health', { cache: 'no-store' });
     health = await response.json();
+    keyCanEdit = Boolean(health?.canSetKey);
   } catch (e) {
     health = null;
   }
   renderAbout();
+  syncKeyCard();
 }
 
 function renderAbout() {

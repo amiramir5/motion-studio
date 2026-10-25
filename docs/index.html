@@ -155,6 +155,7 @@
       </div>
     </div>
     <div class="sheet-footer">
+      <button class="btn ghost small" id="ai-key-chip" title="Gemini key and settings" data-i18n-title="ai.keyChip"><span data-icon="key" data-size="14"></span> <span data-i18n="ai.keyChip">Gemini key</span></button>
       <button class="btn ghost small" id="ai-surprise" title="Surprise me" data-i18n-title="ai.surprise"><span data-icon="bolt" data-size="14"></span> <span data-i18n="ai.surprise">Surprise me</span></button>
       <span class="grow"></span>
       <button class="btn primary" id="ai-generate"><span data-icon="spark" data-size="15"></span> <span data-i18n="ai.generate">Generate scene</span></button>
@@ -229,6 +230,17 @@
         <div class="sheet-section">
           <div class="sheet-label"><span data-i18n="render.output">Output</span><span class="value" id="render-output">1080 × 1920 · 600 frames</span></div>
           <div class="progress-caption"><span id="render-estimate">~35s on this machine</span><span>H.264 · yuv420p · bt709</span></div>
+        </div>
+
+        <div class="sheet-section">
+          <div class="sheet-label">
+            <span data-i18n="render.timing">Timing</span>
+            <button class="link-btn" id="render-measure" type="button" data-i18n="render.measure">Check the real length</button>
+          </div>
+          <div class="progress-caption">
+            <span id="render-measure-state" data-i18n="render.measureHint">Runs the scene in Chrome and reports where the motion actually ends.</span>
+            <button class="link-btn hidden" id="render-apply-measure" type="button"></button>
+          </div>
         </div>
 
         <div class="render-note">

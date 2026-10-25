@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { getBrowser } from './renderer.js';
 import { readRuntime } from './config.js';
 import { composeDocument } from '../shared/compose.js';
-import { measurePageDuration, parseDeclaredDuration, resolveFilmDuration } from './duration.js';
+import { parseDeclaredDuration, probePageDuration, resolveFilmDuration } from './duration.js';
 import { stripFilmUi, summarizeCleanup } from './film-cleanup.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -607,10 +607,11 @@ DOCUMENT:
 ${code}`;
 }
 
-async function detectFilmDuration(code, { width, height, requested, signal } = {}) {
+export async function detectFilmDuration(code, { width, height, requested, signal } = {}) {
   const declared = parseDeclaredDuration(code);
   let measured = 0;
   let indefinite = false;
+  let settled = false;
   let page = null;
   try {
     const browser = await getBrowser();
@@ -642,9 +643,10 @@ async function detectFilmDuration(code, { width, height, requested, signal } = {
       if (ready) break;
       await sleep(60);
     }
-    const probe = await measurePageDuration(page);
+    const probe = await probePageDuration(page);
     measured = probe.measured;
     indefinite = probe.indefinite;
+    settled = probe.settled;
   } catch (error) {
     if (error instanceof AiError) throw error;
   } finally {
@@ -654,7 +656,7 @@ async function detectFilmDuration(code, { width, height, requested, signal } = {
       } catch (e) {}
     }
   }
-  return resolveFilmDuration({ requested, declared, measured, indefinite });
+  return resolveFilmDuration({ requested, declared, measured, indefinite, settled });
 }
 
 export async function streamGeneration(params, handlers) {
@@ -706,7 +708,7 @@ export async function streamGeneration(params, handlers) {
 
   const cacheKey = hash(
     JSON.stringify({
-      v: 3,
+      v: 4,
       model,
       mode,
       idea,

@@ -5,7 +5,7 @@ import puppeteer from 'puppeteer-core';
 import ffmpegPath from 'ffmpeg-static';
 import { CHROME_PATH, RENDERS_DIR, readRuntime } from './config.js';
 import { composeDocument } from '../shared/compose.js';
-import { measurePageDuration, parseDeclaredDuration, resolveFilmDuration } from './duration.js';
+import { parseDeclaredDuration, probePageDuration, resolveFilmDuration } from './duration.js';
 
 const QUALITY = {
   draft: { format: 'jpeg', jpegQuality: 90, crf: 21, preset: 'veryfast' },
@@ -236,6 +236,7 @@ export async function renderFilm(options) {
     fps = 60,
     duration: requestedDuration = 10,
     quality = 'high',
+    lockDuration = false,
     onProgress = () => {},
     signal
   } = options;
@@ -293,42 +294,59 @@ export async function renderFilm(options) {
 
     onProgress({ phase: 'loading', frame: 0, total: totalFrames, elapsed: 0 });
 
-    await page
-      .setContent(documentHtml, { waitUntil: 'load', timeout: 20000 })
-      .catch((error) => {
-        warnings.push(`Load timeout: ${error.message}`);
-      });
+    const loadScene = async () => {
+      await page
+        .setContent(documentHtml, { waitUntil: 'load', timeout: 20000 })
+        .catch((error) => {
+          warnings.push(`Load timeout: ${error.message}`);
+        });
+      const readyDeadline = Date.now() + 15000;
+      while (Date.now() < readyDeadline) {
+        let ready = false;
+        try {
+          ready = await page.evaluate(
+            () => !!(window.__MS_CLOCK__ && window.__MS_CLOCK__.ready === true)
+          );
+        } catch (e) {}
+        if (ready) return true;
+        if (signal?.aborted) throw new Error('Cancelled');
+        await sleep(60);
+      }
+      return false;
+    };
 
-    const readyDeadline = Date.now() + 15000;
-    let ready = false;
-    while (Date.now() < readyDeadline) {
-      try {
-        ready = await page.evaluate(
-          () => !!(window.__MS_CLOCK__ && window.__MS_CLOCK__.ready === true)
-        );
-      } catch (e) {}
-      if (ready) break;
-      if (signal?.aborted) throw new Error('Cancelled');
-      await sleep(60);
+    if (!(await loadScene())) {
+      warnings.push('Page did not finish loading in time; rendered anyway.');
     }
-    if (!ready) warnings.push('Page did not finish loading in time; rendered anyway.');
 
     let detected = null;
-    try {
-      const probe = await measurePageDuration(page);
-      detected = resolveFilmDuration({
-        requested: requestedDuration,
-        declared: parseDeclaredDuration(code),
-        measured: probe.measured,
-        indefinite: probe.indefinite
-      });
-      if (Math.abs(detected.duration - duration) >= 0.05) {
-        duration = detected.duration;
-        totalFrames = Math.max(1, Math.round(duration * fps));
-        onProgress({ phase: 'loading', frame: 0, total: totalFrames, elapsed: 0, duration });
+    let probe = null;
+    if (lockDuration) {
+      detected = { duration: requestedDuration, source: 'user', measured: 0 };
+    } else {
+      try {
+        probe = await probePageDuration(page);
+        detected = resolveFilmDuration({
+          requested: requestedDuration,
+          declared: parseDeclaredDuration(code),
+          measured: probe.measured,
+          indefinite: probe.indefinite,
+          settled: probe.settled
+        });
+        if (Math.abs(detected.duration - duration) >= 0.05) {
+          duration = detected.duration;
+          totalFrames = Math.max(1, Math.round(duration * fps));
+          onProgress({ phase: 'loading', frame: 0, total: totalFrames, elapsed: 0, duration });
+        }
+      } catch (e) {
+        warnings.push('Could not measure the animation end; used the requested length.');
       }
-    } catch (e) {
-      warnings.push('Could not measure the animation end; used the requested length.');
+
+      try {
+        await loadScene();
+      } catch (e) {
+        if (signal?.aborted) throw new Error('Cancelled');
+      }
     }
 
     ffmpeg = await spawnEncoder({
@@ -442,6 +460,7 @@ export async function renderFilm(options) {
       requestedDuration,
       durationChanged: Math.abs(totalFrames / fps - requestedDuration) >= 0.05,
       durationSource: detected?.source || 'requested',
+      measuredDuration: detected?.measured || 0,
       elapsedMs: Date.now() - started,
       warnings
     };

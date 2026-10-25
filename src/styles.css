@@ -2605,3 +2605,34 @@ html[dir='rtl'] .setting-desc code {
   direction: ltr;
   unicode-bidi: isolate;
 }
+
+.link-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.link-btn:hover {
+  text-decoration-color: currentColor;
+}
+.link-btn:disabled {
+  color: var(--muted);
+  cursor: default;
+  text-decoration-color: transparent;
+}
+.link-btn.hidden {
+  display: none;
+}
+[data-lang='fa'] .link-btn {
+  text-underline-offset: 4px;
+}
