@@ -13,6 +13,7 @@ import {
   resolveSize
 } from './config.js';
 import { renderFilm, ffmpegVersion, shutdownBrowser } from './renderer.js';
+import { authEnabled, installAuth } from './auth.js';
 import { listLibrary, addToLibrary, deleteFromLibrary, getLibraryItem } from './library.js';
 import {
   DIRECTIONS,
@@ -33,12 +34,16 @@ const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '0.0.0.0';
 
 app.disable('x-powered-by');
+// Hosted platforms (Hugging Face, Render, Railway…) sit behind one proxy.
+app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1));
 app.use(express.json({ limit: '14mb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
   next();
 });
+
+installAuth(app, express.urlencoded({ extended: false, limit: '4kb' }));
 
 app.use(
   express.static(PUBLIC_DIR, {
@@ -450,6 +455,7 @@ const server = app.listen(PORT, HOST, async () => {
   console.log(`  chrome  ${CHROME_PATH || 'NOT FOUND'}`);
   console.log(`  ffmpeg  ${ffmpeg || 'NOT FOUND'}`);
   console.log(`  gemini  ${aiConfigured() ? 'key configured' : 'no key — add GEMINI_API_KEY to .env'}`);
+  console.log(`  access  ${authEnabled ? 'password required (APP_PASSWORD)' : 'open (set APP_PASSWORD to require a password)'}`);
   console.log(`  root    ${ROOT}`);
   console.log('');
   if (aiConfigured()) {

@@ -30,6 +30,11 @@ async function detectStaticDemo() {
   const timer = setTimeout(() => controller.abort(), 4000);
   try {
     const response = await fetch('api/health', { cache: 'no-store', signal: controller.signal });
+    if (response.status === 401) {
+      // The hosted studio is password protected and the session has expired.
+      location.replace('login');
+      await new Promise(() => {});
+    }
     const type = response.headers.get('content-type') || '';
     if (!response.ok || !type.includes('application/json')) {
       STATIC_DEMO = true;
