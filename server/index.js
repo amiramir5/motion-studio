@@ -47,7 +47,21 @@ app.use(
     }
   })
 );
-app.use('/media', express.static(RENDERS_DIR, { maxAge: '1h', immutable: false }));
+app.use(
+  '/media',
+  express.static(RENDERS_DIR, {
+    maxAge: '1h',
+    immutable: false,
+    setHeaders: (res, filePath) => {
+      // Film sources are untrusted HTML; never let them run on the studio origin.
+      if (/\.html?$/i.test(filePath)) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      }
+    }
+  })
+);
+app.use('/media', (req, res) => res.status(404).end());
 
 function sseStart(res) {
   res.writeHead(200, {
@@ -86,7 +100,7 @@ app.get('/api/ai/health', async (req, res) => {
 
 app.get('/api/ai/models', async (req, res) => {
   try {
-    const models = await listModels();
+    const models = await listModels(req.query.force === '1');
     res.json({ ok: true, models, defaultModel: await resolveModel('') });
   } catch (error) {
     res.status(200).json({
@@ -234,12 +248,26 @@ class Semaphore {
     this.active = 0;
     this.queue = [];
   }
-  acquire() {
+  acquire(signal) {
     if (this.active < this.limit) {
       this.active++;
       return Promise.resolve();
     }
-    return new Promise((resolve) => this.queue.push(resolve));
+    return new Promise((resolve, reject) => {
+      const entry = () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      // A cancelled job must leave the queue instead of waiting for a slot.
+      const onAbort = () => {
+        const index = this.queue.indexOf(entry);
+        if (index !== -1) this.queue.splice(index, 1);
+        reject(new Error('Cancelled'));
+      };
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.queue.push(entry);
+    });
   }
   release() {
     const next = this.queue.shift();
@@ -319,7 +347,7 @@ app.post('/api/render', async (req, res) => {
     if (renderSlots.active >= renderSlots.limit) {
       sseSend(res, 'queued', { position: renderSlots.waiting + 1 });
     }
-    await renderSlots.acquire();
+    await renderSlots.acquire(controller.signal);
     acquired = true;
     if (controller.signal.aborted) throw new Error('Cancelled');
 
@@ -366,9 +394,10 @@ app.post('/api/render', async (req, res) => {
     sseSend(res, 'done', {
       ...item,
       elapsedMs: meta.elapsedMs,
-      url: `/media/${item.file}`,
-      posterUrl: item.poster ? `/media/${item.poster}` : null,
-      sourceUrl: `/media/${item.source}`
+      // Relative URLs keep working when the studio is served from a sub-path.
+      url: `media/${item.file}`,
+      posterUrl: item.poster ? `media/${item.poster}` : null,
+      sourceUrl: `media/${item.source}`
     });
     res.end();
   } catch (error) {
@@ -395,7 +424,8 @@ app.get('/api/library/:id/source', (req, res) => {
   if (!item || !item.source) return res.status(404).json({ error: 'Not found' });
   const sourcePath = path.join(RENDERS_DIR, item.source);
   if (!fs.existsSync(sourcePath)) return res.status(404).json({ error: 'Not found' });
-  res.type('text/html').send(fs.readFileSync(sourcePath, 'utf8'));
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.type('text/plain').send(fs.readFileSync(sourcePath, 'utf8'));
 });
 
 app.delete('/api/library/:id', (req, res) => {

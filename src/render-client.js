@@ -3,7 +3,7 @@ import { postSSE, isAbort, networkError } from './sse.js';
 export async function renderFilm(params, handlers = {}, signal) {
   let done = null;
   try {
-    await postSSE('/api/render', params, {
+    await postSSE('api/render', params, {
       signal,
       onEvent: (event, payload) => {
         if (event === 'job') handlers.onJob?.(payload);
@@ -16,6 +16,7 @@ export async function renderFilm(params, handlers = {}, signal) {
           const error = new Error(payload?.message || 'Render failed.');
           error.cancelled = Boolean(payload?.cancelled);
           error.id = payload?.id;
+          error.fromServer = true;
           throw error;
         }
       }
@@ -26,7 +27,7 @@ export async function renderFilm(params, handlers = {}, signal) {
       aborted.cancelled = true;
       throw aborted;
     }
-    if (error && (error.cancelled || error.status)) throw error;
+    if (error && (error.cancelled || error.status || error.fromServer)) throw error;
     throw networkError(error);
   }
   if (!done) throw new Error('The renderer stopped before producing a file.');

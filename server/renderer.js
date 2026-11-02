@@ -269,33 +269,50 @@ export async function renderFilm(options) {
   const runtime = readRuntime();
   const documentHtml = composeDocument(code, runtime, { csp: true });
 
-  try {
+  const openScene = async () => {
     const browser = await getBrowser();
-    page = await browser.newPage();
-    await page.setViewport({ width: cssWidth, height: cssHeight, deviceScaleFactor });
-    await page.setRequestInterception(true);
-    page.on('request', (request) => {
+    const next = await browser.newPage();
+    await next.setViewport({ width: cssWidth, height: cssHeight, deviceScaleFactor });
+    await next.setRequestInterception(true);
+    next.on('request', (request) => {
       try {
         if (shouldBlockRequest(request.url())) request.abort();
         else request.continue();
       } catch (e) {}
     });
-    page.on('dialog', (dialog) => {
+    next.on('dialog', (dialog) => {
       dialog.dismiss().catch(() => {});
     });
-    page.on('pageerror', (error) => {
-      if (warnings.length < 8) warnings.push(error.message);
+    next.on('pageerror', (error) => {
+      if (warnings.length < 8 && !warnings.includes(error.message)) warnings.push(error.message);
     });
-    page.on('console', (message) => {
-      if (message.type() === 'error' && warnings.length < 8) {
-        warnings.push(message.text());
+    next.on('console', (message) => {
+      const text = message.text();
+      if (message.type() === 'error' && warnings.length < 8 && !warnings.includes(text)) {
+        warnings.push(text);
       }
     });
+    return next;
+  };
+
+  const closePage = async (target) => {
+    if (!target) return;
+    try {
+      await target.close();
+    } catch (e) {}
+  };
+
+  try {
+    page = await openScene();
 
     onProgress({ phase: 'loading', frame: 0, total: totalFrames, elapsed: 0 });
 
-    const loadScene = async () => {
-      await page
+    // Each load gets a brand-new page. Re-using one page with setContent keeps
+    // the same window, so top-level const/let declarations collide and the
+    // virtual clock from the previous load (already fast-forwarded by the
+    // duration probe) would leak into the export.
+    const loadScene = async (target) => {
+      await target
         .setContent(documentHtml, { waitUntil: 'load', timeout: 20000 })
         .catch((error) => {
           warnings.push(`Load timeout: ${error.message}`);
@@ -304,7 +321,7 @@ export async function renderFilm(options) {
       while (Date.now() < readyDeadline) {
         let ready = false;
         try {
-          ready = await page.evaluate(
+          ready = await target.evaluate(
             () => !!(window.__MS_CLOCK__ && window.__MS_CLOCK__.ready === true)
           );
         } catch (e) {}
@@ -315,7 +332,7 @@ export async function renderFilm(options) {
       return false;
     };
 
-    if (!(await loadScene())) {
+    if (!(await loadScene(page))) {
       warnings.push('Page did not finish loading in time; rendered anyway.');
     }
 
@@ -342,10 +359,13 @@ export async function renderFilm(options) {
         warnings.push('Could not measure the animation end; used the requested length.');
       }
 
-      try {
-        await loadScene();
-      } catch (e) {
-        if (signal?.aborted) throw new Error('Cancelled');
+      if (signal?.aborted) throw new Error('Cancelled');
+      const measuredPage = page;
+      page = null;
+      await closePage(measuredPage);
+      page = await openScene();
+      if (!(await loadScene(page))) {
+        warnings.push('Page did not finish loading in time; rendered anyway.');
       }
     }
 
@@ -360,6 +380,9 @@ export async function renderFilm(options) {
       ffmpegClosed = true;
       ffmpegExitCode = code;
     });
+    // Without a listener, an EPIPE from a crashed encoder would take down the
+    // whole server process.
+    ffmpeg.stdin.on('error', () => {});
 
     const screenshotOptions = {
       type: settings.format,
@@ -410,9 +433,9 @@ export async function renderFilm(options) {
     for (let frame = 0; frame < totalFrames; frame++) {
       if (signal?.aborted) throw new Error('Cancelled');
       const t = (frame * 1000) / fps;
-      const pendingStep = page.evaluate((time) => window.__MS_CLOCK__.step(time), t);
+      // Advance the clock first so the captured frame always shows time t.
+      await page.evaluate((time) => window.__MS_CLOCK__.step(time), t);
       const shot = await page.screenshot(screenshotOptions);
-      await pendingStep;
       await writeFrame(shot);
 
       const elapsed = Date.now() - started;
@@ -493,10 +516,6 @@ export async function renderFilm(options) {
     throw error;
   } finally {
     if (abortHandler && signal) signal.removeEventListener('abort', abortHandler);
-    if (page) {
-      try {
-        await page.close();
-      } catch (e) {}
-    }
+    await closePage(page);
   }
 }

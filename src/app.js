@@ -19,8 +19,58 @@ import {
 } from './util.js';
 
 const STORE_KEY = 'ms.studio.v1';
-const STATIC_DEMO =
-  /(^|\.)github\.io$/i.test(location.hostname) || !/^\/(?:index\.html)?$/.test(location.pathname);
+// Static hosting (GitHub Pages, any plain file host) has no render server.
+// The mode is confirmed at boot by probing the API instead of guessing from
+// the URL path, so deep links and sub-path deployments keep every feature.
+let STATIC_DEMO = /(^|\.)github\.io$/i.test(location.hostname);
+
+async function detectStaticDemo() {
+  if (STATIC_DEMO) return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch('api/health', { cache: 'no-store', signal: controller.signal });
+    const type = response.headers.get('content-type') || '';
+    if (!response.ok || !type.includes('application/json')) {
+      STATIC_DEMO = true;
+      return;
+    }
+    health = await response.json();
+    keyCanEdit = Boolean(health?.canSetKey);
+  } catch (e) {
+    STATIC_DEMO = true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function mediaUrl(name) {
+  return name ? `media/${encodeURIComponent(name)}` : '';
+}
+
+function videoUrl(item) {
+  return item.url || mediaUrl(item.file);
+}
+
+function posterUrl(item) {
+  return item.posterUrl || mediaUrl(item.poster);
+}
+
+function outputSize() {
+  const design = DESIGNS[state.aspect];
+  const factor = state.resolution === '720' ? 2 / 3 : state.resolution === '1440' ? 4 / 3 : 1;
+  const even = (value) => Math.max(2, Math.round(value / 2) * 2);
+  return { width: even(design.width * factor), height: even(design.height * factor) };
+}
+
+function frameCount() {
+  return Math.round(state.duration * state.fps);
+}
+
+function renderOutputLabel() {
+  const size = outputSize();
+  return `${size.width} × ${size.height} · ${t('common.frames', { n: frameCount() })}`;
+}
 const DEFAULT_TITLE = 'Untitled Motion';
 const QUALITY_KEY = { draft: 'render.quality.draft', high: 'render.quality.high', max: 'render.quality.max' };
 const RES_LABEL = { 720: '720p', 1080: '1080p', 1440: '1440p' };
@@ -597,7 +647,8 @@ function mountViews() {
 
 /* ---------------------------------------------------------------- boot */
 
-function boot() {
+async function boot() {
+  await detectStaticDemo();
   applyDocumentLang();
   localize(document);
   syncLangButton();
@@ -877,7 +928,7 @@ function syncChrome() {
   });
   els['time-total'].textContent = ` / ${formatTime(state.duration)}`;
   els.scrub.setAttribute('aria-valuemax', String(state.duration));
-  const frames = state.duration * state.fps;
+  const frames = frameCount();
   els['meta-strip'].innerHTML = `
     ${icon('film', 12)}
     <span>${design.width} × ${design.height}</span>
@@ -908,7 +959,7 @@ function syncSettings() {
   setSeg('set-language', getLang());
   els['set-res-value'].textContent = RES_LABEL[state.resolution];
   els['set-fps-value'].textContent = String(state.fps);
-  els['set-frames'].textContent = String(state.duration * state.fps);
+  els['set-frames'].textContent = String(frameCount());
   els['duration-value'].textContent = `${state.duration}s`;
   els['set-duration'].value = String(state.duration);
   els['set-guides'].setAttribute('aria-checked', String(state.guides));
@@ -919,9 +970,7 @@ function syncSettings() {
   els['set-ai-model'].textContent = state.model ? state.model.split('-').slice(0, 2).join('-') : 'GEMINI';
   els['render-res-value'].textContent = RES_LABEL[state.resolution];
   els['render-quality-value'].textContent = qualityLabel(state.quality);
-  els['render-output'].textContent = `${design.width} × ${design.height} · ${t('common.frames', {
-    n: state.duration * state.fps
-  })}`;
+  els['render-output'].textContent = renderOutputLabel();
   els['render-estimate'].textContent = t('common.estimate', { n: estimateSeconds() });
   syncKeyCard();
 }
@@ -1304,7 +1353,7 @@ function bindSheets() {
   });
   els['video-link'].addEventListener('click', async () => {
     if (!currentVideo) return;
-    const ok = await copyText(`${location.origin}${currentVideo.url}`);
+    const ok = await copyText(new URL(videoUrl(currentVideo), location.href).href);
     toast(ok ? t('library.linkCopied') : t('library.linkFail'));
   });
   els['video-code'].addEventListener('click', openVideoCode);
@@ -1316,7 +1365,7 @@ function bindSheets() {
       t('library.deleteBody', { title: escapeHtml(item.title) }),
       async () => {
         try {
-          await fetch(`/api/library/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+          await fetch(`api/library/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
           closeSheet();
           await loadLibrary();
           toast(t('library.filmDeleted'));
@@ -1868,6 +1917,7 @@ async function runGeneration() {
     direction: state.direction || 'random',
     strict: state.strict,
     model: state.model,
+    nonce: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     signal: genController.signal
   };
   const startedAt = Date.now();
@@ -1936,7 +1986,8 @@ async function runGeneration() {
     }
     state.durationLocked = false;
     setCode(done.code, { silentEditor: false, playAfter: true });
-    if (done.direction) {
+    // Keep "random" selected so the next take is random again.
+    if (done.direction && state.direction !== 'random') {
       state.direction = done.direction;
       renderDirections();
     }
@@ -2013,7 +2064,7 @@ async function runGeneration() {
 function cancelGeneration() {
   if (!genController) return;
   genController.abort();
-  setGenPhase('ready', 'Stopping…');
+  setGenPhase('ready', t('toast.stopping'));
 }
 
 /* ---------------------------------------------------------------- render */
@@ -2077,9 +2128,7 @@ function applyMeasuredDuration() {
     fps: state.fps,
     d: state.duration
   });
-  els['render-output'].textContent = `${design.width} × ${design.height} · ${t('common.frames', {
-    n: state.duration * state.fps
-  })}`;
+  els['render-output'].textContent = renderOutputLabel();
   els['render-apply-measure'].classList.add('hidden');
   els['render-measure-state'].textContent = t('render.measuredApplied', { s: state.duration });
   saveSoon();
@@ -2106,9 +2155,7 @@ function openRenderSheet() {
     fps: state.fps,
     d: state.duration
   });
-  els['render-output'].textContent = `${design.width} × ${design.height} · ${t('common.frames', {
-    n: state.duration * state.fps
-  })}`;
+  els['render-output'].textContent = renderOutputLabel();
   els['render-estimate'].textContent = t('common.estimate', { n: estimateSeconds() });
   openSheet('sheet-render');
 }
@@ -2152,7 +2199,7 @@ async function startRender() {
   els['progress-num'].innerHTML = '0<small>%</small>';
   els['progress-detail'].innerHTML = `${t('common.progressFrame', {
     n: 0,
-    total: state.duration * state.fps
+    total: frameCount()
   })}<br>${t('common.eta', { eta: '—' })}`;
   els['progress-bar'].style.width = '0%';
   els['progress-caption'].textContent = t('render.rendering');
@@ -2180,7 +2227,7 @@ async function startRender() {
           )}`;
           els['progress-detail'].innerHTML = `${t('common.progressFrame', {
             n: 0,
-            total: jobDuration * job.fps
+            total: Math.round(jobDuration * job.fps)
           })}<br>${t('common.eta', { eta: '—' })}`;
         },
         onQueued: (info) => {
@@ -2251,7 +2298,7 @@ function showRenderDone(done) {
     done.duration
   ).toFixed(1)}s`;
   els['done-poster'].innerHTML = done.posterUrl
-    ? `<img src="${done.posterUrl}" alt="${escapeHtml(t('library.posterAlt', { title: done.title }))}">`
+    ? `<img src="${escapeHtml(done.posterUrl)}" alt=""${escapeHtml(t('library.posterAlt', { title: done.title }))}">`
     : '';
   els['done-meta'].textContent = `${formatBytes(done.bytes)} · ${qualityLabel(done.quality)} · ${(
     done.elapsedMs / 1000
@@ -2286,7 +2333,7 @@ async function loadLibrary() {
     return;
   }
   try {
-    const response = await fetch('/api/library', { cache: 'no-store' });
+    const response = await fetch('api/library', { cache: 'no-store' });
     const data = await response.json();
     library = Array.isArray(data.items) ? data.items : [];
   } catch (e) {
@@ -2325,7 +2372,7 @@ function renderLibrary() {
       (item) => `
       <button class="lib-item" data-id="${escapeHtml(item.id)}">
         <span class="lib-thumb">
-          ${item.poster ? `<img src="/media/${encodeURIComponent(item.poster)}" alt="" loading="lazy">` : ''}
+          ${item.poster ? `<img src="${escapeHtml(posterUrl(item))}" alt="" loading="lazy">` : ''}
           <span class="play-mini">${iconHtml('play', 16)}</span>
         </span>
         <span class="lib-info">
@@ -2347,10 +2394,9 @@ function renderLibrary() {
 
 function openVideo(item) {
   currentVideo = item;
-  const url = item.url || `/media/${item.file}`;
   els['video-title'].textContent = item.title;
-  els['video-el'].src = url;
-  els['video-el'].poster = item.posterUrl || (item.poster ? `/media/${item.poster}` : '');
+  els['video-el'].src = videoUrl(item);
+  els['video-el'].poster = posterUrl(item);
   els['video-meta'].innerHTML = `
     <span>${item.width} × ${item.height}</span>
     <span>${item.fps} fps</span>
@@ -2361,10 +2407,10 @@ function openVideo(item) {
 }
 
 function downloadItem(item) {
-  const url = item.url || `/media/${item.file}`;
+  const url = videoUrl(item);
   const base = (item.title || 'motion-studio')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 40) || 'motion-studio';
   downloadFile(url, `${base}-${item.width || ''}x${item.height || ''}.mp4`);
@@ -2373,13 +2419,13 @@ function downloadItem(item) {
 async function openVideoCode() {
   if (!currentVideo) return;
   try {
-    const response = await fetch(`/api/library/${encodeURIComponent(currentVideo.id)}/source`, {
+    const response = await fetch(`api/library/${encodeURIComponent(currentVideo.id)}/source`, {
       cache: 'no-store'
     });
     if (!response.ok) throw new Error('Source not found');
     const source = await response.text();
     state.title = currentVideo.title;
-    state.duration = clamp(Math.round(currentVideo.duration || state.duration), 2, 30);
+    state.duration = clamp(Math.round((currentVideo.duration || state.duration) * 10) / 10, 2, 30);
     state.durationLocked = true;
     state.fps = [30, 60].includes(currentVideo.fps) ? currentVideo.fps : state.fps;
     if (currentVideo.aspect && DESIGNS[currentVideo.aspect]) state.aspect = currentVideo.aspect;
@@ -2556,7 +2602,7 @@ async function refreshServerHealth() {
     return;
   }
   try {
-    const response = await fetch('/api/health', { cache: 'no-store' });
+    const response = await fetch('api/health', { cache: 'no-store' });
     health = await response.json();
     keyCanEdit = Boolean(health?.canSetKey);
   } catch (e) {
