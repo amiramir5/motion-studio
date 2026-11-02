@@ -410,11 +410,7 @@ async function streamOnce({ model, system, prompt, maxOutputTokens, temperature,
     const decoder = new TextDecoder();
     let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      armIdle();
-      buffer += decoder.decode(value, { stream: true });
+    const drain = () => {
       let boundary = -1;
       let separatorLength = 2;
       while (true) {
@@ -463,7 +459,18 @@ async function streamOnce({ model, system, prompt, maxOutputTokens, temperature,
         }
         if (parsed.usageMetadata) usage = parsed.usageMetadata;
       }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      armIdle();
+      buffer += decoder.decode(value, { stream: true });
+      drain();
     }
+    // The last event may arrive without a trailing blank line.
+    buffer += decoder.decode() + '\n\n';
+    drain();
     return { text, usage, finishReason };
   } catch (error) {
     if (error instanceof AiError) throw error;
@@ -672,6 +679,7 @@ export async function streamGeneration(params, handlers) {
     duration = 10,
     direction: requestedDirection = 'editorial',
     strict = true,
+    nonce = '',
     signal
   } = params;
 
@@ -718,6 +726,9 @@ export async function streamGeneration(params, handlers) {
       fps,
       duration,
       strict: Boolean(strict),
+      // The client sends one nonce per user request: automatic reconnects reuse
+      // the finished film, while pressing Generate again gets a fresh take.
+      nonce: String(nonce || '').slice(0, 64),
       code: mode === 'generate' ? '' : hash(String(code))
     })
   );
@@ -759,19 +770,32 @@ export async function streamGeneration(params, handlers) {
         final = '';
         handlers.onReset?.({ reason: 'model' });
         handlers.onWarning?.(`The model stopped early. Retrying with ${candidate}…`);
+        handlers.onMeta?.({ model: candidate, cached: false, direction: directionId });
       }
-      const first = await streamWithRetry(
-        { model: candidate, system, prompt: userPrompt, maxOutputTokens: 30000, temperature: 1, signal },
-        {
-          onDelta: (chunk) => handlers.onDelta(chunk),
-          onReset: (attempt) => {
-            final = '';
-            handlers.onReset?.({ attempt });
-          },
-          onRetry: (attempt, message) => handlers.onWarning?.(`Connection interrupted. Retry ${attempt}/3…`),
-          onFirstDelta: () => handlers.onPhase?.({ phase: 'writing' })
+      let first;
+      try {
+        first = await streamWithRetry(
+          { model: candidate, system, prompt: userPrompt, maxOutputTokens: 30000, temperature: 1, signal },
+          {
+            onDelta: (chunk) => handlers.onDelta(chunk),
+            onReset: (attempt) => {
+              final = '';
+              handlers.onReset?.({ attempt });
+            },
+            onRetry: (attempt, message) => handlers.onWarning?.(`Connection interrupted. Retry ${attempt}/3…`),
+            onFirstDelta: () => handlers.onPhase?.({ phase: 'writing' })
+          }
+        );
+      } catch (error) {
+        // A model that is missing, overloaded or failing should not end the
+        // whole generation while another candidate model is available.
+        const fatal = ['CANCELLED', 'BLOCKED', 'NO_KEY', 'INVALID_KEY', 'TOO_LARGE'].includes(error.code);
+        if (fatal || signal?.aborted || candidate === modelCandidates[modelCandidates.length - 1]) {
+          throw error;
         }
-      );
+        incomplete = error;
+        continue;
+      }
       const cleaned = cleanOutput(first.text);
       usage = first.usage || usage;
       if (cleaned.length >= 40 && isCompleteDocument(cleaned)) {

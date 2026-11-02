@@ -40,9 +40,29 @@
   };
 
   var NativeDate = Date;
-  NativeDate.now = function () {
+  var virtualNow = function () {
     return EPOCH + Math.floor(C.now);
   };
+  // `new Date()` and `Date()` must follow the virtual clock too, otherwise
+  // clocks and countdowns drawn from them differ between preview and export.
+  var VirtualDate = function Date() {
+    if (!new.target) return new NativeDate(virtualNow()).toString();
+    if (arguments.length === 0) return Reflect.construct(NativeDate, [virtualNow()], new.target);
+    return Reflect.construct(NativeDate, Array.prototype.slice.call(arguments), new.target);
+  };
+  VirtualDate.prototype = NativeDate.prototype;
+  VirtualDate.now = virtualNow;
+  VirtualDate.parse = NativeDate.parse;
+  VirtualDate.UTC = NativeDate.UTC;
+  try {
+    Object.defineProperty(NativeDate.prototype, 'constructor', {
+      value: VirtualDate,
+      writable: true,
+      configurable: true
+    });
+  } catch (e) {}
+  NativeDate.now = virtualNow;
+  window.Date = VirtualDate;
 
   var nativeNow = performance.now.bind(performance);
   performance.now = function () {

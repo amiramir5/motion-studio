@@ -2636,3 +2636,28 @@ html[dir='rtl'] .setting-desc code {
 [data-lang='fa'] .link-btn {
   text-underline-offset: 4px;
 }
+
+/* Keep sizes, frame rates and durations readable in right-to-left layouts:
+   without isolation "1080 × 1920" renders as "1920 × 1080" in Persian. */
+html[dir='rtl'] #fmt-aspect,
+html[dir='rtl'] #fmt-size,
+html[dir='rtl'] #fmt-fps,
+html[dir='rtl'] #fmt-duration,
+html[dir='rtl'] .meta-strip > span,
+html[dir='rtl'] .video-meta > span,
+html[dir='rtl'] #render-output,
+html[dir='rtl'] #done-sub,
+html[dir='rtl'] #done-meta,
+html[dir='rtl'] #progress-meta,
+html[dir='rtl'] #progress-fps,
+html[dir='rtl'] .lib-meta {
+  unicode-bidi: plaintext;
+}
+
+html[dir='rtl'] #fmt-aspect,
+html[dir='rtl'] #fmt-size,
+html[dir='rtl'] #fmt-fps,
+html[dir='rtl'] #fmt-duration {
+  direction: ltr;
+  unicode-bidi: isolate;
+}

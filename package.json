@@ -9,6 +9,7 @@
     "start": "npm run build && node server/index.js",
     "dev": "npm run build && node --watch server/index.js",
     "render:test": "node scripts/render-test.js",
+    "test": "node scripts/clock-test.js && node scripts/ai-pipeline-test.js",
     "icons": "node scripts/make-icons.js",
     "ai:test": "node scripts/ai-test.js"
   },

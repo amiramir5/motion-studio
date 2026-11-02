@@ -39,19 +39,26 @@ export async function postSSE(url, body, { signal, onEvent } = {}) {
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let match = buffer.match(/\r?\n\r?\n/);
-    while (match && match.index !== undefined) {
-      const raw = buffer.slice(0, match.index);
-      buffer = buffer.slice(match.index + match[0].length);
-      if (raw.trim()) parseFrame(raw, onEvent);
-      match = buffer.match(/\r?\n\r?\n/);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let match = buffer.match(/\r?\n\r?\n/);
+      while (match && match.index !== undefined) {
+        const raw = buffer.slice(0, match.index);
+        buffer = buffer.slice(match.index + match[0].length);
+        if (raw.trim()) parseFrame(raw, onEvent);
+        match = buffer.match(/\r?\n\r?\n/);
+      }
     }
+    buffer += decoder.decode();
+    if (buffer.trim()) parseFrame(buffer, onEvent);
+  } catch (error) {
+    // Stop the request when a handler throws (for example on an error event).
+    reader.cancel().catch(() => {});
+    throw error;
   }
-  if (buffer.trim()) parseFrame(buffer, onEvent);
 }
 
 export function isAbort(error) {
